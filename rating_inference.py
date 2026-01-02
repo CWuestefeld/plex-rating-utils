@@ -45,37 +45,37 @@ def get_library_prior(music, silent=False):
     return prior, len(manual_ratings)
 
 def run_reconstruction(music):
-    """Phase 8: Rebuilds plex_state.json from INFERRED_TAGs in the library."""
+    """Phase 8: Rebuilds state from Artists, Albums, AND Tracks."""
     tag_name = config.get('INFERRED_TAG', "").strip()
     if not tag_name:
-        print("Error: No INFERRED_TAG defined in config. Cannot reconstruct.")
+        print("Error: No INFERRED_TAG defined in config.")
         return
 
     print(f"\n--- Phase 8: State Reconstruction (Mode: {'DRY RUN' if config.get('DRY_RUN', True) else 'LIVE'}) ---")
-    print(f"Searching for items tagged with '{tag_name}' to rebuild local state...")
     
-    tagged_items = music.search(filters={'mood': tag_name})
     restored_count = 0
+    # We must search each type explicitly
+    search_types = ['artist', 'album', 'track']
+    
+    for stype in search_types:
+        tqdm.write(f"Searching for tagged {stype}s...")
+        tagged_items = music.search(filters={'mood': tag_name}, libtype=stype)
+        
+        pbar = tqdm(tagged_items, desc=f"Restoring {stype}s", unit="item", leave=False)
+        for item in pbar:
+            key = str(item.ratingKey)
+            if item.userRating and item.userRating > 0:
+                if key not in state:
+                    restored_count += 1
+                    if not config.get('DRY_RUN', True):
+                        state[key] = item.userRating
+                    pbar.set_postfix(restored=restored_count)
 
-    pbar = tqdm(tagged_items, desc="Reconstructing", unit="item")
-    for item in pbar:
-        key = str(item.ratingKey)
-        if item.userRating and item.userRating > 0:
-            if key not in state:
-                restored_count += 1
-                if not config.get('DRY_RUN', True):
-                    state[key] = item.userRating
-                # Update progress bar postfix instead of printing
-                pbar.set_postfix(restored=restored_count)
-
-    if restored_count > 0:
-        if not config.get('DRY_RUN', True):
-            save_state()
-            print(f"\nSuccess: Restored {restored_count} items to plex_state.json.")
-        else:
-            print(f"\nDry Run Complete: Would have restored {restored_count} items to state.")
+    if restored_count > 0 and not config.get('DRY_RUN', True):
+        save_state()
+        print(f"\nSuccess: Restored {restored_count} total items to plex_state.json.")
     else:
-        print("\nNo new tagged items found to restore.")
+        print(f"\nReconstruction finished. Items found: {restored_count}")
 
 
 def run_report(music):
