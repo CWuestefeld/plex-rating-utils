@@ -1,15 +1,13 @@
 import json
 import os
 import sys
-import threading
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import math
 from plexapi.server import PlexServer
 from tqdm import tqdm
 
 # --- CONFIG & STATE LOADING ---
 CONFIG_FILE = 'config.json'
 STATE_FILE = 'plex_state.json'
-MAX_THREADS = 4 # Optimized for network latency dilution
 
 def load_json(path, default):
     if not os.path.exists(path): return default
@@ -19,27 +17,32 @@ def load_json(path, default):
 
 config = load_json(CONFIG_FILE, {})
 state = load_json(STATE_FILE, {})
-state_lock = threading.Lock() # Prevents corruption during parallel updates
 
 def save_state():
     """Saves the current inference registry to disk (Thread Safe)."""
     if config.get('DRY_RUN', True): return 
-    with state_lock:
-        with open(STATE_FILE, 'w', encoding='utf-8') as f:
-            json.dump(state, f, indent=2)
+    with open(STATE_FILE, 'w', encoding='utf-8') as f:
+        json.dump(state, f, indent=2)
+
+def calculate_dynamic_epsilon(item_count):
+    """
+    Scales the 'Close Enough' threshold. 
+    Small libs: ~0.02 | 300k lib: ~0.15
+    """
+    if not config.get('DYNAMIC_PRECISION', True): return 0.02
+    if item_count < 1000: return 0.02
+    return round(0.05 * (math.log10(item_count)-2), 3)
 
 def get_library_prior(music, silent=False):
     """Calculates the Bayesian Prior using only Manual (User) ratings."""
     if not silent: print("Calculating Global Prior (Manual ratings only)...")
-    # Mega-fetch tracks to avoid O(n) prior calculation
     all_rated = music.searchTracks(filters={'userRating>>': 0})
     manual_ratings = []
     for t in all_rated:
         key = str(t.ratingKey)
         current_val = t.userRating
         if key not in state or abs(state[key] - current_val) > 0.01:
-            if key in state:
-                with state_lock: del state[key]
+            if key in state: del state[key]
             manual_ratings.append(current_val)
     prior = sum(manual_ratings) / len(manual_ratings) if manual_ratings else 6.0
     return prior, len(manual_ratings)
@@ -145,32 +148,23 @@ def run_verification(music):
         except: discrepancies += 1
     print(f"\nDetected Overrides: {overrides} | Orphaned: {discrepancies}")
 
-
-# --- THREADED WORKER ---
-def update_item_worker(item, new_rating, tag_name):
-    """Worker function to handle the actual API POST call."""
-    try:
-        item.rate(new_rating)
-        if tag_name:
-            # We check moods here; if not loaded, this might trigger a fetch.
-            # However, with mega-fetch, item.moods should already be populated.
-            current_moods = [m.tag for m in item.moods]
-            if tag_name not in current_moods:
-                item.addMood(tag_name)
-        
-        with state_lock:
-            state[str(item.ratingKey)] = new_rating
-        return True
-    except Exception as e:
-        return f"Error updating {item.title}: {e}"
-
 def process_layer(label, items, global_mean, start_char="", direction="UP"):
-    updated_count = 0
+    updated_count, skipped_count, hijacked_count = 0, 0, 0
     start_char_floor = start_char.upper() if start_char else chr(0)
     tag_name = config.get('INFERRED_TAG', "").strip()
+
+    # Validation of the math constant
+    c_val = config.get('CONFIDENCE_C', 3.0)
+    if c_val <= 0:
+        print("Error: CONFIDENCE_C must be a positive number. Defaulting to 3.0.")
+        c_val = 3.0
     
-    # SORTING
-    print(f"Sorting {label}s by Artist Name...")
+    # Calculate threshold for this run
+    epsilon = calculate_dynamic_epsilon(len(items))
+    print(f"Dynamic Precision: Accepting drift up to {epsilon} stars for this {label} pass.")
+
+    # 1. SORTING
+    print(f"Sorting {label}s...")
     if label == 'Album':
         items.sort(key=lambda x: (x.parentTitle.upper() if x.parentTitle else "", x.title.upper()))
     elif label == 'Artist':
@@ -179,91 +173,79 @@ def process_layer(label, items, global_mean, start_char="", direction="UP"):
         items.sort(key=lambda x: (x.grandparentTitle.upper() if x.grandparentTitle else "", x.parentTitle.upper() if x.parentTitle else "", x.title.upper()))
 
     current_section = None
-    update_queue = []
-
-    # 1. CALCULATION PHASE (Single Threaded - Fast)
-    print(f"Calculating necessary updates for {label}s...")
-    for item in tqdm(items, desc="Calculating", unit="item"):
-        if label == 'Album': sort_name = item.parentTitle or "Unknown Artist"
-        elif label == 'Artist': sort_name = item.title or "Unknown Artist"
-        elif label == 'Track': sort_name = item.grandparentTitle or "Unknown Artist"
+    pbar = tqdm(items, desc=f"Phase: {label} ({direction})", unit="item")
+    
+    for item in pbar:
+        # Section Header Logic
+        if label == 'Album': sort_name = item.parentTitle or "Unknown"
+        elif label == 'Artist': sort_name = item.title or "Unknown"
+        elif label == 'Track': sort_name = item.grandparentTitle or "Unknown"
         
         first_char = sort_name.strip()[0].upper() if sort_name.strip() else "?"
         if first_char < start_char_floor: continue
+        if first_char != current_section:
+            current_section = first_char
+            tqdm.write(f"\n>>> Section: [{current_section}] ({sort_name})")
 
         key = str(item.ratingKey)
-        has_rating = item.userRating is not None and item.userRating > 0
-        if has_rating and (key not in state): continue
+        plex_rating = item.userRating or 0.0
+        state_rating = state.get(key) # None if Case A/B, float if C/D/E
 
-        new_rating = None
+        # --- CASE C: MANUAL HIJACK DETECTION ---
+        # We thought we owned it, but the Plex value changed since our last write.
+        if state_rating is not None and abs(state_rating - plex_rating) > 0.01:
+            if not config.get('DRY_RUN', True):
+                del state[key]
+                if tag_name:
+                    item.removeMood(tag_name)
+            hijacked_count += 1
+            continue
+
+        # --- CASE A: NEW ITEM WITH MANUAL RATING ---
+        if state_rating is None and plex_rating > 0:
+            continue
+
+        # --- CALCULATION ---
+        inferred_rating = None
         if direction == "UP":
-            # Optimization: Children are now pre-loaded in memory
             children = item.tracks() if label == 'Album' else item.albums()
             rated_children = [c for c in children if c.userRating and c.userRating > 0]
             if rated_children:
                 sum_r = sum(c.userRating for c in rated_children)
                 n = len(rated_children)
-                conf = config.get('CONFIDENCE_C', 3.0)
-                new_rating = ((conf * global_mean) + sum_r) / (conf + n)
+                inferred_rating = ((c_val * global_mean) + sum_r) / (c_val + n)
         elif direction == "DOWN":
             try:
                 parent = item.artist() if label == 'Album' else item.album()
                 if parent and parent.userRating and parent.userRating > 0:
-                    new_rating = parent.userRating
+                    inferred_rating = parent.userRating
             except: continue
 
-        if new_rating:
-            current = item.userRating or 0
-            if abs(current - new_rating) > 0.01:
-                update_queue.append((item, new_rating, first_char, sort_name))
-
-    # 2. DISPATCH PHASE (Multi-Threaded - dilutes latency)
-    if not update_queue:
-        print("No updates required for this phase.")
-        return 0
-
-    print(f"Dispatching {len(update_queue)} updates via {MAX_THREADS} threads...")
-    total_to_do = len(update_queue)
-    
-    if config.get('DRY_RUN', True):
-        print(f"[DRY RUN] Would have dispatched {total_to_do} updates.")
-        return total_to_do
-
-    with ThreadPoolExecutor(max_workers=MAX_THREADS) as executor:
-        futures = {executor.submit(update_item_worker, itm, rat, tag_name): (itm, rat, char, name) 
-                   for itm, rat, char, name in update_queue}
-        
-        pbar = tqdm(total=total_to_do, desc="Updating Plex", unit="item")
-        
-        batch_counter = 0
-        for future in as_completed(futures):
-            item, rating, char, sort_name = futures[future]
+        # --- CASE D/E: DRIFT VS UPDATE ---
+        if inferred_rating:
+            delta = abs(plex_rating - inferred_rating)
             
-            # Update Section Header UI
-            if char != current_section:
-                current_section = char
-                tqdm.write(f"\n>>> Entering Section: [{current_section}] (Artist: {sort_name})")
+            # Case D: Drift (Close enough, skip the expensive network/DB write)
+            if state_rating is not None and delta < epsilon:
+                skipped_count += 1
+                continue
             
-            result = future.result()
-            if result is True:
+            # Case B/E: New or Significant Change
+            if state_rating is None or delta >= 0.01: # 0.01 is just a noise floor
+                if not config.get('DRY_RUN', True):
+                    item.rate(inferred_rating)
+                    state[key] = inferred_rating
+                    if tag_name and tag_name not in [m.tag for m in item.moods]:
+                        item.addMood(tag_name)
                 updated_count += 1
-                batch_counter += 1
-            else:
-                tqdm.write(result) # Print the error
-            
-            # Periodic batch save
-            if batch_counter >= 100:
-                save_state()
-                batch_counter = 0
-            
-            pbar.update(1)
-        pbar.close()
+        
+        # Periodic Save
+        if updated_count % 100 == 0 and updated_count > 0:
+            save_state()
 
-    save_state()
+    if not config.get('DRY_RUN', True): save_state()
+    print(f"Complete: {updated_count} Updated, {skipped_count} Drift-Skipped, {hijacked_count} Hijacks Resolved.")
     return updated_count
-
-# --- MAIN AND OTHER UTILITIES ---
-# [Note: run_reconstruction, run_report, run_cleanup, run_verification logic preserved]
 
 def main():
     try:
@@ -272,43 +254,61 @@ def main():
     except Exception as e:
         print(f"Plex Connection Error: {e}"); return
 
-    print(f"\n--- Bayesian Music Engine (V9 Parallel) ---")
-    print("1-4: Inference | 5: Verify | 6: Cleanup | 7: Rankings | 8: Reconstruct")
+    print(f"\n======= Bayesian Music Engine (V12) =======\n")
+    print(" 0: FULL SEQUENCE (Runs Options 1-4)")
+    print(" ----------------------------------------")
+    print(" 1: Album-Up   (Track Ratings -> Albums)")
+    print(" 2: Artist-Up  (Album Ratings -> Artists)")
+    print(" 3: Album-Down (Artist Ratings -> Albums)")
+    print(" 4: Track-Down (Album Ratings -> Tracks)")
+    print(" ----------------------------------------")
+    print(" 5: Verify State   | 6: Cleanup/Undo")
+    print(" 7: Power Rankings | 8: Reconstruct State")
     
     try:
-        choice = int(input("Select Action (1-8) [1]: ") or 1)
-        if choice == 5: run_verification(music); return
-        if choice == 6: run_cleanup(music); return
-        if choice == 7: run_report(music); return
-        if choice == 8: run_reconstruction(music); return
-        start_char = input("Start at Artist Letter (leave blank for start): ") or ""
+        choice = int(input("\nSelect Option [0-8]: ") or 0)
     except ValueError: return
 
-    initial_prior, manual_count = get_library_prior(music)
-    print(f"Initial Global Prior: {initial_prior/2:.2f} stars.")
+    # Handle Administrative Options (5-8)
+    if choice == 5: run_verification(music); return
+    if choice == 6: run_cleanup(music); return
+    if choice == 7: run_report(music); return
+    if choice == 8: run_reconstruction(music); return
 
-    # MEGA-FETCH LOGIC
-    # We pull everything in one go to populate the local object tree
-    print("Performing Mega-Fetch (Populating local metadata cache)...")
-    # For Tracks, we search at the track level. For others, we search at their level.
-    # Note: Search results in PlexAPI often auto-populate child data if requested correctly.
+    # Checkpoint/Start Letter
+    start_char = input("Start Artist Letter (Empty for ALL): ") or ""
+
+    # Establish Prior
+    prior, _ = get_library_prior(music)
     
+    # Define the Phases
     phases = [
-        ("Album", lambda: music.searchAlbums(), "UP"),
-        ("Artist", lambda: music.searchArtists(), "UP"),
-        ("Album", lambda: music.searchAlbums(), "DOWN"),
-        ("Track", lambda: music.searchTracks(), "DOWN")
+        ("Album", music.searchAlbums, "UP"),
+        ("Artist", music.searchArtists, "UP"),
+        ("Album", music.searchAlbums, "DOWN"),
+        ("Track", music.searchTracks, "DOWN")
     ]
 
-    total_updated = 0
-    for i, (label, fetcher_func, direction) in enumerate(phases):
-        if (i + 1) < choice: continue
-        current_start = start_char if (i + 1) == choice else ""
-        print(f"---\nFetching {label}s from server...")
-        items = fetcher_func()
-        count = process_layer(label, items, initial_prior, current_start, direction)
-        total_updated += count
-        print(f"Phase {i+1} complete. Updated {count} items.")
+    # Determine the workload
+    if choice == 0:
+        # Run everything from start to finish
+        workload = phases
+    elif 1 <= choice <= 4:
+        # Run ONLY the selected phase
+        workload = [phases[choice - 1]]
+    else:
+        print("Invalid choice.")
+        return
+
+    # EXECUTION LOOP
+    for i, (label, fetch_func, direction) in enumerate(workload):
+        # We only apply the start_char to the FIRST phase of whatever the workload is
+        current_start = start_char if i == 0 else ""
+        
+        print(f"\n>>> Executing Option {choice if choice != 0 else i+1}: {label}-{direction}")
+        print(f"Fetching {label}s")
+        items = fetch_func()
+        process_layer(label, items, prior, current_start, direction)
 
     final_prior, _ = get_library_prior(music, silent=True)
     print("\n" + "="*45 + "\nRUN SUMMARY\n" + "="*45)
