@@ -2,6 +2,7 @@ import json
 import os
 import sys
 import math
+import time
 from plexapi.server import PlexServer
 from tqdm import tqdm
 
@@ -28,6 +29,7 @@ def calculate_dynamic_epsilon(item_count):
     """
     Scales the 'Close Enough' threshold. 
     Small libs: ~0.02 | 300k lib: ~0.15
+    Can be disabled by setting DYNAMIC_PRECISION to false in config.
     """
     if not config.get('DYNAMIC_PRECISION', True): return 0.02
     if item_count < 1000: return 0.02
@@ -150,8 +152,11 @@ def run_verification(music):
 
 def process_layer(label, items, global_mean, start_char="", direction="UP"):
     updated_count, skipped_count, hijacked_count = 0, 0, 0
+    batch_counter = 0
     start_char_floor = start_char.upper() if start_char else chr(0)
     tag_name = config.get('INFERRED_TAG', "").strip()
+    cooldown_batch = config.get('COOLDOWN_BATCH',25)
+    cooldown_sleep = config.get('COOLDOWN_SLEEP', 5)
 
     # Validation of the math constant
     c_val = config.get('CONFIDENCE_C', 3.0)
@@ -176,16 +181,25 @@ def process_layer(label, items, global_mean, start_char="", direction="UP"):
     pbar = tqdm(items, desc=f"Phase: {label} ({direction})", unit="item")
     
     for item in pbar:
-        # Section Header Logic
-        if label == 'Album': sort_name = item.parentTitle or "Unknown"
-        elif label == 'Artist': sort_name = item.title or "Unknown"
-        elif label == 'Track': sort_name = item.grandparentTitle or "Unknown"
+        # Determine sorting name and display name for progress bar
+        if label == 'Album': 
+            sort_name = item.parentTitle or "Unknown"
+            display_name = item.title[:15] # 15 chars of Album
+        elif label == 'Artist': 
+            sort_name = item.title or "Unknown"
+            display_name = sort_name[:15] # 15 chars of Artist
+        elif label == 'Track': 
+            sort_name = item.grandparentTitle or "Unknown"
+            display_name = (item.parentTitle or "Unknown")[:15] # 15 chars of Album
         
+        # Update progress bar description with current item
+        pbar.set_description(f"{label}: {display_name:<15}")
+
         first_char = sort_name.strip()[0].upper() if sort_name.strip() else "?"
         if first_char < start_char_floor: continue
         if first_char != current_section:
             current_section = first_char
-            tqdm.write(f"\n>>> Section: [{current_section}] ({sort_name})")
+            tqdm.write(f">>> Section: [{current_section}] ({sort_name})")
 
         key = str(item.ratingKey)
         plex_rating = item.userRating or 0.0
@@ -238,45 +252,63 @@ def process_layer(label, items, global_mean, start_char="", direction="UP"):
                     if tag_name and tag_name not in [m.tag for m in item.moods]:
                         item.addMood(tag_name)
                 updated_count += 1
+                batch_counter += 1 # Increment the "Burst" counter
         
         # Periodic Save
         if updated_count % 100 == 0 and updated_count > 0:
             save_state()
 
+        # If we've hit a batch limit, pause to let Plex finish its disk I/O
+        if batch_counter >= cooldown_batch:
+            save_state()
+            #tqdm.write(f"--- DB Breather: Pausing for {cooldown_sleep}s ---")
+            pbar.set_description(f"{label}: --pause {cooldown_sleep}s--   ")
+            time.sleep(cooldown_sleep)
+            batch_counter = 0 # Reset the burst counter
+
     if not config.get('DRY_RUN', True): save_state()
-    print(f"Complete: {updated_count} Updated, {skipped_count} Drift-Skipped, {hijacked_count} Hijacks Resolved.")
+    print(f"Pass: {updated_count} Updated, {skipped_count} Drift-Skipped, {hijacked_count} Hijacks Resolved.")
     return updated_count
 
 def main():
+    # --- AUTOMATION HANDLING ---
+    automation_choice = None
+    if len(sys.argv) > 1:
+        try:
+            automation_choice = int(sys.argv[1])
+        except ValueError:
+            print(f"Invalid argument: {sys.argv[1]}. Use 0-8."); return
+        
     try:
         plex = PlexServer(config['PLEX_URL'], config['PLEX_TOKEN'])
         music = plex.library.section(config['LIBRARY_NAME'])
     except Exception as e:
         print(f"Plex Connection Error: {e}"); return
 
-    print(f"\n======= Bayesian Music Engine (V12) =======\n")
-    print(" 0: FULL SEQUENCE (Runs Options 1-4)")
-    print(" ----------------------------------------")
-    print(" 1: Album-Up   (Track Ratings -> Albums)")
-    print(" 2: Artist-Up  (Album Ratings -> Artists)")
-    print(" 3: Album-Down (Artist Ratings -> Albums)")
-    print(" 4: Track-Down (Album Ratings -> Tracks)")
-    print(" ----------------------------------------")
-    print(" 5: Verify State   | 6: Cleanup/Undo")
-    print(" 7: Power Rankings | 8: Reconstruct State")
-    
-    try:
-        choice = int(input("\nSelect Option [0-8]: ") or 0)
-    except ValueError: return
+    if automation_choice is None:
+        print(f"\n======= Bayesian Music Engine (V14) =======\n")
+        print(" 0: FULL SEQUENCE (Runs Options 1-4)")
+        print(" ----------------------------------------")
+        print(" 1: Album-Up   (Track Ratings -> Albums)")
+        print(" 2: Artist-Up  (Album Ratings -> Artists)")
+        print(" 3: Album-Down (Artist Ratings -> Albums)")
+        print(" 4: Track-Down (Album Ratings -> Tracks)")
+        print(" ----------------------------------------")
+        print(" 5: Verify State   | 6: Cleanup/Undo")
+        print(" 7: Power Rankings | 8: Reconstruct State")
+        try:
+            choice = int(input("\nSelect Option [0-8]: ") or 0)
+            start_char = input("Start Artist Letter (Empty for ALL): ") or ""
+        except ValueError: return
+    else:
+        choice = automation_choice
+        start_char = "" # Automation assumes a full run of the selected option
 
     # Handle Administrative Options (5-8)
     if choice == 5: run_verification(music); return
     if choice == 6: run_cleanup(music); return
     if choice == 7: run_report(music); return
     if choice == 8: run_reconstruction(music); return
-
-    # Checkpoint/Start Letter
-    start_char = input("Start Artist Letter (Empty for ALL): ") or ""
 
     # Establish Prior
     prior, _ = get_library_prior(music)
@@ -300,6 +332,9 @@ def main():
         print("Invalid choice.")
         return
 
+    total_updated = 0
+    initial_prior = prior
+    
     # EXECUTION LOOP
     for i, (label, fetch_func, direction) in enumerate(workload):
         # We only apply the start_char to the FIRST phase of whatever the workload is
