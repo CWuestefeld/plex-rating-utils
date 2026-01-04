@@ -343,7 +343,7 @@ def main():
         print(f"\n>>> Executing Option {choice if choice != 0 else i+1}: {label}-{direction}")
         print(f"Fetching {label}s")
         items = fetch_func()
-        process_layer(label, items, prior, current_start, direction)
+        total_updated += process_layer(label, items, prior, current_start, direction)
 
     final_prior, _ = get_library_prior(music, silent=True)
     print("\n" + "="*45 + "\nRUN SUMMARY\n" + "="*45)
