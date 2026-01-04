@@ -5,7 +5,7 @@ A Python-based utility for Plex Media Server that uses Bayesian math hierarchica
 ## The Motivation
 Plex is great, and PlexAmp makes it even better. Especially with large music libraries, the Guest DJ and smart playlists make it easy to (re)discover your music. But these features are hobbled by the rating system. You have to individually rate each track for the app to be able to do anything with it.
 
-For example, I like to start my morning listening to smooth jazz, so I've got a smart playlist that gathers tracks with that style. But I'd like to have it keep out tracks that I don't like (I hate vocal jazz; hopefully my programming is better than my taste), so I downvote those. But I can't put a rule into my smart playlist to only include tracks with a rating > 3, because there are a lot of tracks that I just haven't rated at all yet. Similary, although Plex doesn't document this, the common wisdom is that the auto DJ features will stay away from tracks rated less < 2.5, but this is similarly limited by sparse rating data.
+For example, I like to start my morning listening to smooth jazz, so I've got a smart playlist that gathers tracks with that style. But I'd like to have it keep out tracks that I don't like (I hate vocal jazz; hopefully my programming is better than my taste), so I downvote those. But I can't put a rule into my smart playlist to only include tracks with a rating > 3, because there are a lot of tracks that I just haven't rated at all yet. Similarly, although Plex doesn't document this, the common wisdom is that the auto DJ features will stay away from tracks rated less < 2.5, but this is similarly limited by sparse rating data.
 
 What if we could take what ratings you've got in your library, and generalize them across related tracks. Specifically, if we've rated a few tracks on an album highly, then we should be able to call that album a "good" album; and on a good album, it's likely that any unrated tracks are good.
 
@@ -37,7 +37,10 @@ The rationale behind assuming that an unrated track should get the same rating (
      "LIBRARY_NAME": "Music",
      "CONFIDENCE_C": 3.0,
      "DRY_RUN": true,
-     "INFERRED_TAG": "Rating_Inferred"
+     "INFERRED_TAG": "Rating_Inferred",
+     "DYNAMIC_PRECISION": true,
+     "COOLDOWN_BATCH": 25,
+     "COOLDOWN_SLEEP": 5
    }
 
 
@@ -54,12 +57,12 @@ Select from the phases:
 
 If you choose 1-4, you'll be prompted for where to start. If you just accept the default by hitting enter, you'll start at the beginning. But if you needed to interrupt the process midstream, this will allow you to skip the part you already completed, restarting from the letter it was processing when stopped.
 
-The `config.json` setting `"INFERRED_TAG": "Rating_Inferred"` tells the utility to put in the `mood` tag to mark ratings that were inferred. If you don't want to clutter those tags, set this to an empty string: `"INFERRED_TAG": ""` and we won't tag it. We'll stick track which items we updated in the `plex_state.json` file. **DO NOT** delete that file!
+The `config.json` setting `"INFERRED_TAG": "Rating_Inferred"` tells the utility to put in the `mood` tag to mark ratings that were inferred. If you don't want to clutter those tags, set this to an empty string: `"INFERRED_TAG": ""` and we won't tag it. We'll track which items we updated in the `plex_state.json` file. **DO NOT** delete that file!
 
 **Please** take advantage of the DRY_RUN feature to sanity check before running it for real. I don't want to feel bad because your library got mangled. Look in the `config.json` described above: if the setting for DRY_RUN is `true`, then it won't actually save the results back into Plex. When you're ready, change this setting to `false` to let the utility actually write the changes.
 
 ## Caveats
-This needs to move a lot of data to perform its calculations. Plex's internal database management is single-threaded, and it performance seems to get very noticeably worse for larger libraries. For really large libraries, this can take many hours. Even a moderately-sized library might take a couple hours.
+This needs to move a lot of data to perform its calculations. Plex's internal database management is single-threaded, and its performance seems to get very noticeably worse for larger libraries. For really large libraries, this can take many hours. Even a moderately-sized library might take a couple hours.
 
 Don't delete the `plex_state.json` file. We need that to track whether you've made manual updates to the Ratings. If you do delete it (and if `INFERRED_TAG` had been used originally) we can rebuild it, but we'll miss any manual changes you might have made since the last run.
 
@@ -87,7 +90,5 @@ You don't need to run a full 4-phase inference every day.
 
 The engine uses a **Dynamic Epsilon** threshold based on library size.
 
-* For a library of **300,000 items**, the script accepts a drift of roughly **~0.12 stars**.
+* For a library of **300,000 items**, the script accepts a drift of roughly **~0.17 stars**.
 * If the Bayesian math suggests a track should be 3.84 stars, but it is currently 3.75, the script will **skip the update** to save your CPU and disk I/O - and more importantly, your time.
-
-
