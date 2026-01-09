@@ -7,11 +7,11 @@ Plex is great, and PlexAmp makes it even better. Especially with large music lib
 
 For example, I like to start my morning listening to smooth jazz, so I've got a smart playlist that gathers tracks with that style. But I'd like to have it keep out tracks that I don't like (I hate vocal jazz; hopefully my programming is better than my taste), so I downvote those. But I can't put a rule into my smart playlist to only include tracks with a rating > 3, because there are a lot of tracks that I just haven't rated at all yet. Similarly, although Plex doesn't document this, the common wisdom is that the auto DJ features will stay away from tracks rated less < 2.5, but this is similarly limited by sparse rating data.
 
-What if we could take what ratings you've got in your library, and generalize them across related tracks. Specifically, if we've rated a few tracks on an album highly, then we should be able to call that album a "good" album; and on a good album, it's likely that any unrated tracks are good.
+What if we could take what ratings you've got in your library, together with any critic ratings that Plex has in its metadata, and generalize them across related tracks. Specifically, if we've rated a few tracks on an album highly, then we should be able to call that album a "good" album; and on a good album, it's likely that any unrated tracks are good.
 
 ## The Concept
 Standard Plex ratings are "flat". Rating a track doesn't influence the album, and rating an album doesn't influence the artist, so the ratings wind up being very sparse. This tool solves that problem with:
-1. **Bottom-Up Inference:** Calculating Album and Artist ratings based on a Bayesian average of their children.
+1. **Bottom-Up Inference:** Calculating Album and Artist ratings based on a Bayesian average of their children and the ratings of critics.
 2. **Top-Down Inheritance:** Allowing unrated Tracks to inherit ratings from their parent Albums.
 3. **Precision:** Utilizing high-precision floating-point ratings (e.g., 3.74 stars) to power more granular smart playlists and Auto-DJ features.
 
@@ -23,6 +23,7 @@ The rationale behind assuming that an unrated track should get the same rating (
 ## Key Features
 - **Restartable:** Massive libraries are handled via a phased, checkpoint-based approach. If something happens forcing it to stop partway through, you can restart with minimal wasted work.
 - **Bayesian Priors:** Uses a "Confidence Constant" to ensure that a single 5-star track (or 1-star, for that matter) doesn't unfairly dictate an entire album's score.
+- **Critic Ratings:** Incorporate critic ratings (or don't) with a configurable weighting. Add/subtract a bias factor to better align critic ratings with the way you rate music.
 - **Non-Destructive:** Includes a full Cleanup/Undo mode to revert all script-applied ratings.
 - **Shadow DB (Safe):** Uses a local file, `plex_state.json`, to distinguish between script-generated ratings and your manual ratings. It will never overwrite your manual work.
 - **Tagging inferred data:**  Optionally add a `mood` tag to each track/album/artist so you can see which ratings are inferred.
@@ -34,10 +35,14 @@ The rationale behind assuming that an unrated track should get the same rating (
 3. Create a `config.json` based on the provided template:
 ```
    {
+     "version": "1.1.0",
      "PLEX_URL": "http://your-server-ip:32400",
      "PLEX_TOKEN": "your-token-here",
      "LIBRARY_NAME": "Music",
      "CONFIDENCE_C": 3.0,
+     "BIAS_CRITIC": 1.5,
+     "WEIGHT_CRITIC": 3.0,
+     "WEIGHT_GLOBAL": 1.0,
      "DRY_RUN": true,
      "INFERRED_TAG": "Rating_Inferred",
      "DYNAMIC_PRECISION": true,

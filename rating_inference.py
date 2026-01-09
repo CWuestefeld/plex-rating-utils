@@ -7,6 +7,7 @@ from plexapi.server import PlexServer
 from tqdm import tqdm
 
 # --- Config & State loading ---
+APP_VERSION = "1.1.0"
 CONFIG_FILE = 'config.json'
 STATE_FILE = 'plex_state.json'
 
@@ -22,10 +23,14 @@ def get_config():
         create = input("Would you like to create a default config file? (y/n): ").strip().lower()
         if create == 'y':
             default_config = {
+                "version": APP_VERSION,
                 "PLEX_URL": "http://your-server-ip:32400",
                 "PLEX_TOKEN": "ENTER_TOKEN_HERE",
                 "LIBRARY_NAME": "Music",
                 "CONFIDENCE_C": 3.0,
+                "BIAS_CRITIC": 1.5,
+                "WEIGHT_CRITIC": 3.0,
+                "WEIGHT_GLOBAL": 1.0,
                 "DRY_RUN": True,
                 "INFERRED_TAG": "Rating_Inferred",
                 "DYNAMIC_PRECISION": True,
@@ -50,16 +55,55 @@ def get_config():
             print("Configuration required. Exiting.")
             sys.exit(1)
     
-    return load_json(CONFIG_FILE, {})
+    cfg = load_json(CONFIG_FILE, {})
+    if cfg.get('version') != APP_VERSION:
+        print(f"Warning: Config file version ({cfg.get('version')}) does not match script version ({APP_VERSION}).")
+    return cfg
 
 config = get_config()
-state = load_json(STATE_FILE, {})
+state = {}
+active_library_uuid = None  # shared between load_state() and save_state()
+
+def load_state(library):
+    """Loads the state file, validating version and UUID."""
+    global state, active_library_uuid
+    active_library_uuid = library.uuid
+    
+    if not os.path.exists(STATE_FILE): return
+
+    data = load_json(STATE_FILE, {})
+    
+    # Detect format: New (dict with 'ratings') vs Old (flat dict)
+    if 'ratings' in data:
+        loaded_uuid = data.get('library_uuid')
+        loaded_version = data.get('version')
+        
+        if loaded_version != APP_VERSION:
+            print(f"Note: State file version ({loaded_version}) differs from program version ({APP_VERSION}).")
+            
+        if loaded_uuid and loaded_uuid != library.uuid:
+            print(f"\nCRITICAL WARNING: State file UUID ({loaded_uuid}) does not match current library UUID ({library.uuid}).")
+            print(f"Target Library: {library.title} ({library.uuid})")
+            print(f"Are you using the wrong library?")
+            confirm = input("Continuing may lead to incorrect ratings. Proceed? (y/n): ").lower()
+            if confirm != 'y': sys.exit(1)
+            
+        state.update(data.get('ratings', {}))
+    else:
+        print("Note: Legacy state file format detected. Will upgrade on next save.")
+        state.update(data)
 
 def save_state():
-    """Saves the current inference registry to disk (Thread Safe)."""
+    """Saves the current inference registry to disk"""
     if config.get('DRY_RUN', True): return 
+    
+    data = {
+        "version": APP_VERSION,
+        "library_uuid": active_library_uuid,
+        "ratings": state
+    }
     with open(STATE_FILE, 'w', encoding='utf-8') as f:
-        json.dump(state, f, indent=2)
+        json.dump(data, f, indent=2)
 
 def handle_pause(pbar):
     """
@@ -273,6 +317,9 @@ def process_layer(label, items, global_mean, start_char="", direction="UP"):
 
     # Validation of the math constant
     c_val = config.get('CONFIDENCE_C', 3.0)
+    w_critic = config.get('WEIGHT_CRITIC', 3.0)
+    w_global = config.get('WEIGHT_GLOBAL', 1.0)
+    b_critic = config.get('BIAS_CRITIC', 1.5)
     if c_val <= 0:
         print("Error: CONFIDENCE_C must be a positive number. Defaulting to 3.0.")
         c_val = 3.0
@@ -336,12 +383,30 @@ def process_layer(label, items, global_mean, start_char="", direction="UP"):
             # --- CALCULATION ---
             inferred_rating = None
             if direction == "UP":
+                # 1. Gather all children
                 children = item.tracks() if label == 'Album' else item.albums()
-                rated_children = [c for c in children if c.userRating and c.userRating > 0]
-                if rated_children:
-                    sum_r = sum(c.userRating for c in rated_children)
-                    n = len(rated_children)
-                    inferred_rating = ((c_val * global_mean) + sum_r) / (c_val + n)
+                
+                # 2. FILTER: Only use children NOT in our managed state (Manual ratings)
+                # This prevents the "feedback loop" where inferred ratings inform parents
+                manual_children = [c for c in children if (c.userRating or 0) > 0 and str(c.ratingKey) not in state]
+                sum_manual = sum(c.userRating for c in manual_children)
+                n_manual = len(manual_children)
+                
+                # 3. Determine Informed Prior (p_i)
+                # Normalize and Bias the critic rating (clamped 0-10)
+                if (item.rating and item.rating > 0):
+                    c_rating = min( 0, ( (item.rating + b_critic) / (10 + b_critic) ) * 10 )
+                else:
+                    c_rating = None
+                
+                if c_rating and w_critic > 0:
+                    p_i = ((global_mean * w_global) + (c_rating * w_critic)) / (w_global + w_critic)
+                else:
+                    p_i = global_mean
+
+                # 4. Apply Bayesian Blend using CONFIDENCE_C
+                inferred_rating = ((c_val * p_i) + sum_manual) / (c_val + n_manual)
+
             elif direction == "DOWN":
                 try:
                     parent = item.artist() if label == 'Album' else item.album()
@@ -379,6 +444,7 @@ def process_layer(label, items, global_mean, start_char="", direction="UP"):
                 pbar.set_description(f"{label}: --pause {cooldown_sleep}s--   ")
                 time.sleep(cooldown_sleep)
                 batch_counter = 0 # Reset the burst counter
+                
         except KeyboardInterrupt:
             if handle_pause(pbar) == 'q':
                 pbar.close()
@@ -411,8 +477,11 @@ def main():
     except Exception as e:
         print(f"Plex Connection Error: {e}"); return
 
+    print(f"Connected to Library: {music.title} (UUID: {music.uuid})")
+    load_state(music)
+
     if automation_choice is None:
-        print(f"\n======= Bayesian Music Engine (V14) =======\n")
+        print(f"\n======= Bayesian Music Engine (v{APP_VERSION}) =======\n")
         print(" 0: FULL SEQUENCE (Runs Options 1-4)")
         print(" ----------------------------------------")
         print(" 1: Album-Up   (Track Ratings -> Albums)")
