@@ -2,7 +2,7 @@
 config.json
 
 # Local State / Shadow DB
-plex_state.json
+*plex_state.json
 
 # Python environment and cache
 __pycache__/
@@ -20,3 +20,4 @@ Thumbs.db
 # misc backup stuff
 *.bak
 *.backup
+.geminicontext
