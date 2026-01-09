@@ -16,7 +16,43 @@ def load_json(path, default):
         with open(path, 'r', encoding='utf-8') as f: return json.load(f)
     except: return default
 
-config = load_json(CONFIG_FILE, {})
+def get_config():
+    if not os.path.exists(CONFIG_FILE):
+        print(f"Configuration file '{CONFIG_FILE}' not found.")
+        create = input("Would you like to create a default config file? (y/n): ").strip().lower()
+        if create == 'y':
+            default_config = {
+                "PLEX_URL": "http://your-server-ip:32400",
+                "PLEX_TOKEN": "ENTER_TOKEN_HERE",
+                "LIBRARY_NAME": "Music",
+                "CONFIDENCE_C": 3.0,
+                "DRY_RUN": True,
+                "INFERRED_TAG": "Rating_Inferred",
+                "DYNAMIC_PRECISION": True,
+                "COOLDOWN_BATCH": 25,
+                "COOLDOWN_SLEEP": 5
+            }
+            try:
+                with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
+                    json.dump(default_config, f, indent=2)
+                print(f"\nSuccessfully created {CONFIG_FILE}.")
+                print("Please open the file and update 'PLEX_URL', 'PLEX_TOKEN', and 'LIBRARY_NAME'.")
+                print("\nTo find your PLEX_TOKEN:")
+                print("1. Sign in to Plex in a browser.")
+                print("2. Go to any media item and View XML.")
+                print("3. Look for 'X-Plex-Token' in the URL or the XML content.")
+                print("   (See https://support.plex.tv/articles/204059436-finding-an-authentication-token-x-plex-token/)\n")
+                sys.exit(0)
+            except Exception as e:
+                print(f"Error creating config file: {e}")
+                sys.exit(1)
+        else:
+            print("Configuration required. Exiting.")
+            sys.exit(1)
+    
+    return load_json(CONFIG_FILE, {})
+
+config = get_config()
 state = load_json(STATE_FILE, {})
 
 def save_state():

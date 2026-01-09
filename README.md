@@ -45,6 +45,9 @@ The rationale behind assuming that an unrated track should get the same rating (
      "COOLDOWN_SLEEP": 5
    }
 ```
+If no config file is found, it'll offer to create a default one for you. You'll still need to update it, especially 
+with those first three settings. If you don't know what your Plex token is, read here: 
+https://support.plex.tv/articles/204059436-finding-an-authentication-token-x-plex-token/
 
 ## Usage
 Run the script: `python rating_inference.py`
@@ -95,6 +98,8 @@ Here are some real-world performance measurements, taken for a 7,500 track libra
 | --------- | --------- | ------- |
 | full RUN  |     17:30 |   11:00 |
 | full UNDO |     16:00 |    8:00 |
+
+(mm:ss)
 
 But as library size increases, the scaling is *greater than* linear.
 
