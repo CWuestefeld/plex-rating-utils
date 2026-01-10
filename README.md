@@ -131,3 +131,53 @@ The engine uses a **Dynamic Precision** threshold based on library size.
 * If you're a real stickler and want absolute precision, you can update your config.json file, setting `"DYNAMIC_PRECISION": false`. That'll disable the tolerance, forcing updates.
 
 To avoid completely swamping your Plex server, we take a brief break occasionally. This is controlled by the `config.json` settings `COOLDOWN_BATCH` and `COOLDOWN_SLEEP`. The default settings are to break every 25 items, taking a 5 second pause. Feel free to adjust those as you'd like.
+
+### Description of configuration settings
+
+version
+: The version of the app that this file is intended for. This is a safety feature in case of future breaking changes,
+and possibly to help migrate for newer versions.
+
+PLEX_URL
+: The URL of your Plex server. This normally specifies port 32400.
+
+PLEX_TOKEN
+: This is like a password into your plex server. Read this article to learn how to find yours:
+https://support.plex.tv/articles/204059436-finding-an-authentication-token-x-plex-token/
+
+LIBRARY_NAME
+: The name of the music library you want to process. 
+
+CONFIDENCE_C
+: This sets a weighting factor for how the global average is factored into the total rating of an album. 
+It's basically like saying "include this number of virtual tracks with the global-average rating, when 
+calculating the album's overall rating".
+
+BIAS_CRITIC
+: This value is added to critic ratings (remember that this is on a 10-point scale), and then that value is normalized
+back into a 1-10 scale. This is provided because critics seem to use numbers that suggest "bad album" when what they really
+mean is "not great" or "not up to the artist's previous standards".
+
+WEIGHT_CRITIC
+: How much to weight the critic's rating (if any) versus the global average. Since this implicitly contains more information 
+(i.e., which specific album, rather than just a global value), it makes sense to weight it more heavily. Good values should range 1-5.
+
+WEIGHT_GLOBAL
+: How much to weight the global averate, relative the critic's rating above. I like 1.0, but do as you like.
+
+DRY_RUN
+: Set to "true" to run this to see what would happen within making any real changes. Once you're happy with that, change the value to "false" and run it again.
+
+INFERRED_TAG
+: The name of a tag that will be added to moods for each item that gets an inferred rating. This allows you to see in Plex which items got inferred ratings, and so if you want, you could exclude them from a playlist or something. The default value is "Rating_Inferred", but you can set it to whatever you want. If you set it to an empty string (""), the tool will not set an inferred tag. That will save significant processing time. But it also removes the capability mentioned above, and also the 
+possibility to restore the plex_state.json file if it's every lost/corrupted.
+
+DYNAMIC_PRECISION
+: A true/false value, when true it will allow an item's rating to drift a little before updating it. This can save signficant processing time on later runs.
+
+COOLDOWN_BATCH
+: This and the corresponding _SLEEP setting are intended to let the server get a very brief rest so it can settle if necessary. The _BATCH value specifies how many items to update before taking a break.
+
+COOLDOWN_SLEEP
+: This works together with the _BATCH setting. The _SLEEP value specifies how many seconds to wait.
+
