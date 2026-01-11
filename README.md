@@ -5,20 +5,24 @@ A Python-based utility for Plex Media Server that uses Bayesian math hierarchica
 ## The Motivation
 Plex is great, and PlexAmp makes it even better. Especially with large music libraries, the Guest DJ and smart playlists make it easy to (re)discover your music. But these features are hobbled by the rating system. You have to individually rate each track for the app to be able to do anything with it.
 
-For example, I like to start my morning listening to smooth jazz, so I've got a smart playlist that gathers tracks with that style. But I'd like to have it keep out tracks that I don't like (I hate vocal jazz; hopefully my programming is better than my taste), so I downvote those. But I can't put a rule into my smart playlist to only include tracks with a rating > 3, because there are a lot of tracks that I just haven't rated at all yet. Similarly, although Plex doesn't document this, the common wisdom is that the auto DJ features will stay away from tracks rated less < 2.5, but this is similarly limited by sparse rating data.
+For example, I like to start my morning listening to smooth jazz, so I've got a smart playlist that gathers tracks with that style. But I'd like to have it keep out tracks that I don't like (I hate vocal jazz; hopefully my programming is better than my taste), so I downvote those. But I can't put a rule into my smart playlist to only include tracks with a `userRating > 3`, because there are a lot of tracks that I just haven't rated at all yet. Similarly, although Plex doesn't document this, the common wisdom is that the auto DJ features will stay away from tracks rated `< 2.5`, but this is similarly limited by sparse rating data.
 
 What if we could take what ratings you've got in your library, together with any critic ratings that Plex has in its metadata, and generalize them across related tracks. Specifically, if we've rated a few tracks on an album highly, then we should be able to call that album a "good" album; and on a good album, it's likely that any unrated tracks are good.
 
 ## The Concept
 Standard Plex ratings are "flat". Rating a track doesn't influence the album, and rating an album doesn't influence the artist, so the ratings wind up being very sparse. This tool solves that problem with:
-1. **Bottom-Up Inference:** Calculating Album and Artist ratings based on a Bayesian average of their children and the ratings of critics.
+1. **Bottom-Up Inference:** Calculating Album and Artist ratings based on a Bayesian average of their children, the entire library, and the ratings of critics.
 2. **Top-Down Inheritance:** Allowing unrated Tracks to inherit ratings from their parent Albums.
 3. **Precision:** Utilizing high-precision floating-point ratings (e.g., 3.74 stars) to power more granular smart playlists and Auto-DJ features.
 
 While doing this, it tracks which ratings it has inferred so that your own ratings will always be the data driving the calculations, and avoids turning the rating process into a feedback loop.
 
 ## Why Bayesian?
-The rationale behind assuming that an unrated track should get the same rating (if known) as the album it appears on should be pretty obvious. But what about that business about using "Bayesian averages"? Well, imagine that you've got an album, and only one of its tracks is rated, with 5 stars. If we just set an album naively to the average of its tracks, then we'd set our hypothetical album to 5 overall. But that's almost certainly not true: I'll bet that you've got far fewer "5" albums in your library than you have individual "5" tracks. A better solution is to start from the assumption that any unrated track on the album is just the average across all tracks in your library, and let the known tracks on the album demonstrate that they should be better. So we start with a guess (this is the "Global Prior" you'll see output during processing) and let good and bad tracks on the album pull that average up or down.
+The rationale behind assuming that an unrated track should get the same rating (if known) as the album it appears on should be pretty obvious. But what about that business about using "Bayesian averages"? Well, imagine that you've got an album, and only one of its tracks is rated, with 5 stars. If we just set an album naively to the average of its tracks, then we'd set our hypothetical album to 5 overall. But that's almost certainly not correct: I'll bet that you've got far fewer "5" albums in your library than you have individual "5" tracks. 
+
+A better solution is to start from the assumption that any unrated track on the album is just the average across all tracks in your library, and let the known tracks on the album demonstrate that they should be better. So we start with a guess (this is the "Global Prior" you'll see output during processing) and let good and bad tracks on the album pull that average up or down. 
+
+And if Plex's metadata includes a rating from critics, then this data can be similarly incorporated. Thus, we integrate a bunch of information to come up with the best available guess of how good a given unrated track is.
 
 ## Key Features
 - **Restartable:** Massive libraries are handled via a phased, checkpoint-based approach. If something happens forcing it to stop partway through, you can restart with minimal wasted work.
@@ -60,7 +64,7 @@ Run the script: `python rating_inference.py`
 Select from the phases:
 - **Option 0:** Run through the whole cycle, 1-4, automatically.
 - **Options 1-2 (Up):** Generate Album/Artist ratings from Tracks.
-- **Options 3-4 (Down):** Push ratings to unrated items.
+- **Options 3-4 (Down):** Push inherited ratings to unrated child items.
 - **Option 5:** Verify state synchronization. Determine whether you need to re-run the utility.
 - **Option 6:** Full Cleanup/Undo.
 - **Option 7:** Power Rankings (Top/Bottom Artists).
@@ -68,7 +72,7 @@ Select from the phases:
 
 If you've got a reasonably-sized library, you can just choose 0 and let the whole thing run. But if you've got a large library, you'll probably want to do it in phases.
 
-If you choose 1-4, you'll also get prompted for where to start. If you just hit enter to accept the default, you'll start at the beginning. But if you needed to interrupt the process midstream, this will allow you to skip the part you already completed, restarting from the letter it was processing when stopped. In other words, if you stopped processing in the middle of the letter "P", then you can pick up where you left off by entering "P" at this prompt, and it'll skip past everything up through "O", and just start on the P's.
+If you choose 1-4, you'll also get prompted for where to start. If you just hit enter to accept the default, you'll start at the beginning. But if you had previiously needed to interrupt the process midstream, this will allow you to skip the part you already completed, restarting from the letter it was processing when stopped. In other words, if you stopped processing in the middle of the letter "P", then you can pick up where you left off by entering "P" at this prompt, and it'll skip past everything up through "O", and just start on the P's.
 
 If you want to automate running the tool, you can run it by including on the command line which Option you want to run. For example, 
 `python rating_inference.py 4`
@@ -91,7 +95,7 @@ If you need to pause or cancel processing, hit Control-C as if you were trying t
 
 Don't delete the `plex_state.json` file. We need that to track whether you've made manual updates to the Ratings. If you do delete it (and if `INFERRED_TAG` had been used originally) we can rebuild it, but we'll miss any manual changes you might have made since the last run.
 
-The tool is designed only to handle a **single music library**. If you've got more than one, and you want to use this tool on them, you'll need to juggle the `plex_state.json` file together with the value of `LIBRARY_NAME`. Make sure that you always have the correct `plex_state.json` in place for the library you're running against.
+The tool is designed only to handle a **single music library**. If you've got more than one, and you want to use this tool on them, you'll need to juggle the `plex_state.json` file together with the value of `LIBRARY_NAME`. Make sure that you always have the correct `plex_state.json` in place for the library you're running against. The tool will try to protect you from mistakes here. The state file is stamped with the internal UUID of the Plex library that it was generated from. If you run it pointing at a library that doesn't match this stamp, you'll get a stern warning, but it'll let you proceed if you really want to.
 
 ## Hints and Tips
 
@@ -106,7 +110,7 @@ Here are some real-world performance measurements, taken for a 7,500 track libra
 
 (mm:ss)
 
-But as library size increases, the scaling is *greater than* linear.
+But as library size increases, the scaling is *greater than* linear. That is, a library twice as big will take *more than* twice as long to process.
 
 ### The Initial "Baseline" Run
 
@@ -124,7 +128,7 @@ You don't need to run a full 4-phase inference every day.
 
 ### Understanding the "Drift" Logic
 
-The engine uses a **Dynamic Precision** threshold based on library size.
+The engine uses a **Dynamic Precision** threshold based on library size. Since the time needed to process a large library is much greater, the strategy is to require updates of such a library less frequently. So smaller libraries will force ratings to update with a smaller delta. On larger libraries, it allows differences to get a bit larger before updating a given rating value.
 
 * For a library of 50,000 tracks, the tool will accept drift up to about 0.13 stars (i.e., 1/8 star). 300,000 items would allow 0.17 stars.
 * If the Bayesian math suggests a track should be 3.84 stars, but it is currently 3.75, the script will **skip the update** to save your CPU and disk I/O - and more importantly, your time.
