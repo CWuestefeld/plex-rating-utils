@@ -1,3 +1,8 @@
+# -----------------------------------------------------------------------------
+# Copyright (c) 2026 Chris Wuestefeld
+# Licensed under the MIT License. See LICENSE in the project root for details.
+# -----------------------------------------------------------------------------
+
 import json
 import os
 import sys
@@ -7,7 +12,7 @@ from plexapi.server import PlexServer
 from tqdm import tqdm
 
 # --- Config & State loading ---
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.1.1"
 CONFIG_FILE = 'config.json'
 STATE_FILE = 'plex_state.json'
 
@@ -477,11 +482,12 @@ def main():
     except Exception as e:
         print(f"Plex Connection Error: {e}"); return
 
-    print(f"Connected to Library: {music.title} (UUID: {music.uuid})")
+    # print(f"Connected to Library: {music.title} (UUID: {music.uuid})")
     load_state(music)
 
     if automation_choice is None:
-        print(f"\n======= Bayesian Music Engine (v{APP_VERSION}) =======\n")
+        print(f"\n======= Bayesian Music Rating Engine (v{APP_VERSION}) =======")
+        print(   "-------  Copyright (c) 2026 Chris Wuestefeld  -------\n")
         print(" 0: FULL SEQUENCE (Runs Options 1-4)")
         print(" ----------------------------------------")
         print(" 1: Album-Up   (Track Ratings -> Albums)")

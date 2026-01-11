@@ -39,7 +39,7 @@ And if Plex's metadata includes a rating from critics, then this data can be sim
 3. Create a `config.json` based on the provided template:
 ```
    {
-     "version": "1.1.0",
+     "version": "1.1.1",
      "PLEX_URL": "http://your-server-ip:32400",
      "PLEX_TOKEN": "your-token-here",
      "LIBRARY_NAME": "Music",
@@ -185,3 +185,6 @@ COOLDOWN_BATCH
 COOLDOWN_SLEEP
 : This works together with the _BATCH setting. The _SLEEP value specifies how many seconds to wait.
 
+# Copyright and licensing
+Code is copyright (c) 2026 by Chris Wuestefeld
+Licensed under MIT License.
