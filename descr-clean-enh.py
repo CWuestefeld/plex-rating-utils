@@ -7,10 +7,13 @@ import json
 import os
 import sys
 import math
+import logging
 import sqlite3
 import time
 from plexapi.server import PlexServer
 from tqdm import tqdm
+
+from library_interface import LibraryInterface
 
 # --- Config & State loading ---
 APP_VERSION = "0.1.1"
@@ -192,13 +195,12 @@ def get_library(dbconn):
 
     return music
 
-
 def print_welcome():
     print(f"======= Descriptive data clean & enhance (v{APP_VERSION}) =======")
-    return None
 
 def main():
     print_welcome()
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
     dbconn = get_database()
     if not dbconn:
@@ -212,6 +214,9 @@ def main():
             dbconn.close()
             sys.exit(1)
 
+        interface = LibraryInterface.initialize_interface(config, dbconn)
+        interface.extract_mirror()
+
     except:
         print("uncaught error, bailing")
 
@@ -219,7 +224,7 @@ def main():
         # Cleanly close the database connection when the program finishes.
         dbconn.close()
 
-    print("exiting")
+    print("Process finished.")
 
 if __name__ == "__main__":
     main()
