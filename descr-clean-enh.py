@@ -13,16 +13,54 @@ import time
 from plexapi.server import PlexServer
 from tqdm import tqdm
 
-from library_interface import LibraryInterface
-from country_manager import CountryManager
 
 # --- Config & State loading ---
 APP_VERSION = "0.1.1"
 CONFIG_FILE = 'config.json'
 
+class TqdmLoggingHandler(logging.Handler):
+    def __init__(self, level=logging.NOTSET):
+        super().__init__(level)
+
+    def emit(self, record):
+        try:
+            msg = self.format(record)
+            # This is the magic line that keeps the bar at the bottom
+            tqdm.write(msg)
+            self.flush()
+        except Exception:
+            self.handleError(record)
+
+def setup_logging():
+    # 1. Get the Root Logger
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.INFO)
+
+    # 2. Clear any existing handlers (important to prevent duplicates)
+    if root_logger.hasHandlers():
+        root_logger.handlers.clear()
+
+    # 3. Create the File Handler
+    file_handler = logging.FileHandler("descr-clean-enh.log")
+    file_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+    root_logger.addHandler(file_handler)
+
+    # 4. Create the TQDM Handler
+    tqdm_handler = TqdmLoggingHandler()
+    tqdm_handler.setFormatter(logging.Formatter('%(levelname)-8s %(message)s'))
+    root_logger.addHandler(tqdm_handler)
+
+setup_logging()
+logger = logging.getLogger(__name__)
+
+from library_interface import LibraryInterface
+from country_manager import CountryManager
+
 
 def load_json(path, default):
-    if not os.path.exists(path): return default
+    if not os.path.exists(path): 
+        logger.warning(f"Config file '{path}' not found, using default.")
+        return default
     try:
         with open(path, 'r', encoding='utf-8') as f: return json.load(f)
     except: return default
@@ -59,17 +97,18 @@ def get_config():
                 print("2. Go to any media item and View XML.")
                 print("3. Look for 'X-Plex-Token' in the URL or the XML content.")
                 print("   (See https://support.plex.tv/articles/204059436-finding-an-authentication-token-x-plex-token/)\n")
+                logger.info("Configuration file created successfully.")
                 sys.exit(0)
             except Exception as e:
-                print(f"Error creating config file: {e}")
-                sys.exit(1)
+                logger.critical(f"Error creating config file: {e}")
+                sys.exit(0)
         else:
-            print("Configuration required. Exiting.")
+            logger.critical("Configuration required. Exiting.")
             sys.exit(1)
     
     cfg = load_json(CONFIG_FILE, {})
     if cfg.get('version') != config_version:
-        print(f"Warning: Config file version ({cfg.get('version')}) does not match script version ({config_version}).")
+        logger.warning(f"Config file version mismatch: ({cfg.get('version')}) does not match script version ({config_version}).")
     return cfg
 
 config = get_config()
@@ -88,21 +127,21 @@ def get_database():
 
     db_filename = config.get("DB_FILENAME")
     if not db_filename:
-        print("Error: DB_FILENAME not specified in config.json.")
+        logger.error("DB_FILENAME not specified in config.json.")
         return None
 
     db_exists = os.path.exists(db_filename)
     conn = None
 
     if not db_exists:
-        print(f"Database file '{db_filename}' not found.")
-        create = input("Would you like to create and initialize it? (y/n): ").strip().lower()
+        logger.warning(f"Database file '{db_filename}' not found.")
+        create = input("Would you like to create and initialize a new database file? (y/n): ").strip().lower()
         if create != 'y':
-            print("Database is required to proceed. Exiting.")
+            logger.critical("Database is required to proceed. Exiting.")
             return None
         
         try:
-            print(f"Creating new database: {db_filename}")
+            logger.info(f"Creating new database: {db_filename}")
             conn = sqlite3.connect(db_filename)
             cursor = conn.cursor()
             cursor.execute("PRAGMA foreign_keys = ON;")
@@ -117,34 +156,34 @@ def get_database():
             )
             
             conn.commit()
-            print("Database created and initialized successfully.")
+            logger.info("Database created and initialized successfully.")
             return conn
 
         except FileNotFoundError:
-            print(f"Error: Schema file '{DB_SCHEMA_FILE}' not found. Cannot initialize database.")
+            logger.critical(f"Error: Schema file '{DB_SCHEMA_FILE}' not found. Cannot initialize database.")
             if conn: conn.close()
             if os.path.exists(db_filename): os.remove(db_filename)
             return None
         except sqlite3.Error as e:
-            print(f"Database error during initialization: {e}")
+            logger.critical(f"Database error during initialization: {e}")
             if conn: conn.close()
             if os.path.exists(db_filename): os.remove(db_filename)
             return None
 
     try:
-        print(f"Connecting to existing database: {db_filename}")
+        logger.debug(f"Connecting to existing database: {db_filename}")
         conn = sqlite3.connect(db_filename)
         conn.execute("PRAGMA foreign_keys = ON;")
         return conn
     except sqlite3.Error as e:
-        print(f"Error connecting to database: {e}")
+        logger.critical(f"Error connecting to database: {e}")
+        if conn: conn.close()
         return None
 
 def maintenance_vacuum(dbconn):
-    print("Defragmenting database and reclaiming space...")
-    # VACUUM cannot run inside a transaction, so ensure no commits are pending
+    logger.info("Defragmenting database and reclaiming space...")
     dbconn.execute("VACUUM")
-    print("Database optimized.")
+    logger.debug("Database optimized.")
 
 def get_library(dbconn):
     # Using the data in the configs, we then try to open the plex library that's specified. If that's successful, then we can proceed. 
@@ -167,23 +206,21 @@ def get_library(dbconn):
     row = cursor.fetchone()
 
     if row is None:
-        print(f"Library '{library_name}' not found in the database. Adding it now.")
+        logger.info(f"Library '{library_name}' not found in the database. Adding it now.")
         try:
             cursor.execute(
                 "INSERT INTO libraries (library_name, library_uuid) VALUES (?, ?)",
                 (music.title, music.uuid)
             )
             dbconn.commit()
-            print("Library added to database successfully.")
+            logger.debug("Library added to database successfully.")
         except sqlite3.Error as e:
-            print(f"Database error while adding library: {e}")
+            logger.critical(f"Database error while adding library: {e}")
             return None
     else:
         db_uuid = row[1]
         if db_uuid != music.uuid:
-            print("\nCRITICAL WARNING: Library UUID mismatch!")
-            print(f"  - The database expects a library with UUID: {db_uuid}")
-            print(f"  - The connected Plex library '{music.title}' has UUID: {music.uuid}")
+            logger.error(f"\nCRITICAL WARNING: Library UUID mismatch! Expected {db_uuid}, but found {music.uuid} at the Plex server")
             print("This can happen if you are running this tool against a different Plex server or library than before.")
             
             confirm = input("Do you want to update the database to use this new library UUID? (y/n): ").strip().lower()
@@ -192,12 +229,12 @@ def get_library(dbconn):
                 return None
             
             try:
-                print("Updating library UUID in the database...")
+                logger.warning("Updating library UUID in the database...")
                 cursor.execute("UPDATE libraries SET library_uuid = ? WHERE library_name = ?", (music.uuid, library_name))
                 dbconn.commit()
-                print("Database updated successfully.")
+                logger.info("Database updated successfully.")
             except sqlite3.Error as e:
-                print(f"Database error while updating library UUID: {e}")
+                logger.critical(f"Database error while updating library UUID: {e}")
                 return None
 
     return music
@@ -220,18 +257,16 @@ def handle_menu():
 
 def print_welcome():
     print(f"======= Descriptive data clean & enhance (v{APP_VERSION}) =======")
-    print( "-------  Copyright (c) 2026 Chris Wuestefeld  -------\n")
+    print( "-------     Copyright (c) 2026 Chris Wuestefeld     -------\n")
 
 
 def main():
+
     print_welcome()
-    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
     dbconn = get_database()
     if not dbconn:
         sys.exit(1)
-
-    print("got database connection")
 
     try:
         mylibrary = get_library(dbconn)
@@ -248,19 +283,19 @@ def main():
             if choice == 'X':
                 break
             if choice == 1:
-                print("extracting plex data")
+                logger.info("extracting plex data")
                 interface.extract_mirror()
             elif choice == 2:
-                print("analyzing country data")
+                logger.info("analyzing country data")
                 cmgr.resolve_countries()
             elif choice == 3:
-                print("applying country cleanup")
+                logger.info("applying country cleanup")
                 cmgr.apply_normalization()
 
         maintenance_vacuum(dbconn)
 
     except Exception as e:
-        print(f"uncaught error: {e}")
+        logger.error(f"uncaught error: {e}")
 
     finally:
         # Cleanly close the database connection when the program finishes.

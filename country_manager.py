@@ -1,9 +1,16 @@
+# -----------------------------------------------------------------------------
+# Copyright (c) 2026 Chris Wuestefeld
+# Licensed under the MIT License. See LICENSE in the project root for details.
+# -----------------------------------------------------------------------------
+
 import logging
 import json 
 import sqlite3
 from pathlib import Path
 from tqdm import tqdm 
 from thefuzz import process
+
+logger = logging.getLogger(__name__) # This will be "country_manager"
 
 class CountryManager:
     # Path to the reference JSON file
@@ -12,7 +19,6 @@ class CountryManager:
     def __init__(self, db_connection, library_id):
         self.db = db_connection
         self.library_id = library_id
-        self.logger = logging.getLogger("CountryManager")
         
         # Internal reference map will be loaded on first use.
         self._reference_map = None
@@ -24,6 +30,7 @@ class CountryManager:
 
         try:
             with open(self.ISO_DATA_FILE, 'r', encoding='utf-8') as f:
+                logger.debug("Loading ISO country reference data.")
                 data = json.load(f)
 
             # PASS 1: Find the "Gold" (preferred) name for every ISO Code
@@ -57,12 +64,13 @@ class CountryManager:
             return ref_map
         
         except FileNotFoundError:
-            self.logger.error(f"ISO Data file not found: {self.ISO_DATA_FILE}")
+            logger.error(f"ISO Data file not found: {self.ISO_DATA_FILE}")
             raise
 
 
     def _get_unmapped_strings(self):
         """Identifies unique country strings in library_artists that lack a mapping."""
+        logger.debug("getting unmapped strings...")
         query = """
             SELECT DISTINCT country_name 
             FROM library_artists 
@@ -83,8 +91,7 @@ class CountryManager:
         """
         # Lazy-load the reference map on first use
         if self._reference_map is None:
-            self.logger.debug("Loading ISO country reference data.")
-            print("Loading ISO country reference data.")
+            logger.debug("Loading ISO country reference data.")
             self._reference_map = self._load_iso_data()
 
         clean_raw = raw_string.strip().lower()
@@ -112,12 +119,15 @@ class CountryManager:
     def _commit_mapping(self, raw_string, canonical_name):
         """Records the resolution in taxonomy_tags and tag_map."""
         # 1. Ensure the "Gold" name exists as a canonical tag
+        logger.debug("committing tag mapping...")
+        logger.debug(f"...inserting tag {canonical_name}")
         self.db.execute("""
             INSERT OR IGNORE INTO taxonomy_tags (library_id, tag_name, tag_type, is_canonical)
             VALUES (?, ?, 'Country', 1)
         """, (self.library_id, canonical_name))
 
         # 2. Get the tag_id for the gold version
+        logger.debug("...getting canonical tag id...")
         cursor = self.db.execute(
             "SELECT tag_id FROM taxonomy_tags WHERE tag_name = ? AND library_id = ?",
             (canonical_name, self.library_id)
@@ -125,6 +135,7 @@ class CountryManager:
         tag_id = cursor.fetchone()[0]
 
         # 3. Map the original raw_string to that tag_id
+        logger.debug(f"...inserting map {raw_string} -> {tag_id}")
         self.db.execute("""
             INSERT OR IGNORE INTO tag_map (library_id, raw_tag_name, tag_type, canonical_tag_id)
             VALUES (?, ?, 'Country', ?)
@@ -136,7 +147,7 @@ class CountryManager:
         """Main execution loop for cleaning country data."""
         orphans = self._get_unmapped_strings()
         if not orphans:
-            self.logger.info("No unmapped countries found.")
+            logger.info("No unmapped countries found.")
             print("No unmapped countries found.")
             return
 
@@ -147,14 +158,13 @@ class CountryManager:
             canonical = self._get_canonical_name(raw)
             
             if canonical:
-                print(f"resolved mapping for '{raw}' to '{canonical}'")
+                logger.info(f"resolved mapping for '{raw}' to '{canonical}'")
                 self._commit_mapping(raw, canonical)
                 resolved_count += 1
             else:
                 ai_candidates.append(raw)
 
-        self.logger.info(f"Resolved {resolved_count} countries. {len(ai_candidates)} forwarded to AI.")
-        print(f"Resolved {resolved_count} countries. {len(ai_candidates)} forwarded to AI.")
+        logger.info(f"Resolved {resolved_count} countries. {len(ai_candidates)} forwarded to AI (TODO).")
 
         # Future Phase: Handle remaining semantic mismatches
         if ai_candidates:
@@ -167,7 +177,7 @@ class CountryManager:
 
     def _update_artist_countries(self):
         """Updates the library_artists mirror with canonical country names."""
-        self.logger.info("Applying country normalization to library artist mirror...")
+        logger.info("Applying country normalization to library artist mirror...")
         sql = """
             UPDATE library_artists
             SET country_name = (
@@ -188,7 +198,7 @@ class CountryManager:
 
     def _update_item_tag_links(self):
         """Updates item_tags to point to canonical country tag IDs without collisions."""
-        self.logger.info("Merging item_tags to canonical country mappings...")
+        logger.info("Merging item_tags to canonical country mappings...")
         
         # 1. INSERT the new canonical relationships. 
         # 'OR IGNORE' handles cases where the canonical link already exists.
@@ -224,12 +234,12 @@ class CountryManager:
         cursor.execute(delete_sql, (self.library_id,))
         deleted = cursor.rowcount
         
-        self.logger.info(f"Merged {inserted} tags and removed {deleted} legacy links.")
+        logger.info(f"Merged {inserted} tags and removed {deleted} legacy links.")
         return inserted
 
     def _cleanup_orphan_tags(self):
         """Deletes non-canonical country tags that are no longer referenced."""
-        self.logger.info("Cleaning up orphaned, non-canonical country tags...")
+        logger.info("Cleaning up orphaned, non-canonical country tags...")
         sql = """
             DELETE FROM taxonomy_tags 
             WHERE is_canonical = 0 
@@ -247,17 +257,17 @@ class CountryManager:
         2. Re-links item tags to point to canonical country tags.
         3. Deletes unused, non-canonical country tags.
         """
-        self.logger.info("Starting country data normalization transaction.")
+        logger.info("Starting country data normalization transaction.")
         try:
             with self.db:
                 artists_updated = self._update_artist_countries()
-                self.logger.info(f"Updated {artists_updated} artists with normalized country names.")
+                logger.info(f"Updated {artists_updated} artists with normalized country names.")
                 tags_remapped = self._update_item_tag_links()
-                self.logger.info(f"Re-mapped {tags_remapped} entries in item_tags.")
+                logger.info(f"Re-mapped {tags_remapped} entries in item_tags.")
                 tags_cleaned = self._cleanup_orphan_tags()
-                self.logger.info(f"Cleaned up {tags_cleaned} orphaned country tags.")
-                self.logger.info("Country normalization transaction committed successfully.")
+                logger.info(f"Cleaned up {tags_cleaned} orphaned country tags.")
+                logger.info("Country normalization transaction committed successfully.")
         except Exception as e:
-            self.logger.error(f"Country normalization failed. Rolling back transaction. Error: {e}")
+            logger.error(f"Country normalization failed. Rolling back transaction. Error: {e}")
             self.db.rollback()
             raise
