@@ -937,7 +937,18 @@
     },
     {
         "Name": "Great Britain",
-        "Code": "GB"
+        "Code": "GB",
+        "Preference": "nonpreferred"
+    },
+    {
+        "Name": "England",
+        "Code": "GB",
+        "Preference": "nonpreferred"
+    },
+    {
+        "Name": "Ireland",
+        "Code": "GB",
+        "Preference": "nonpreferred"
     },
     {
         "Name": "United States",
@@ -945,15 +956,18 @@
     },
     {
         "Name": "United States of America",
-        "Code": "US"
-    },
-    {
-        "Name": "U.S.A.",
-        "Code": "US"
+        "Code": "US",
+        "Preference": "nonpreferred"
     },
     {
         "Name": "USA",
-        "Code": "US"
+        "Code": "US",
+        "Preference": "nonpreferred"
+    },
+    {
+        "Name": "U.S.A.",
+        "Code": "US",
+        "Preference": "nonpreferred"
     },
     {
         "Name": "United States Minor Outlying Islands",

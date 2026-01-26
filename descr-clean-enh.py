@@ -259,8 +259,8 @@ def main():
 
         maintenance_vacuum(dbconn)
 
-    except:
-        print("uncaught error, bailing")
+    except Exception as e:
+        print(f"uncaught error: {e}")
 
     finally:
         # Cleanly close the database connection when the program finishes.

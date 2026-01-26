@@ -20,22 +20,46 @@ class CountryManager:
     def _load_iso_data(self):
         """Builds a case-insensitive lookup map from the internal JSON file."""
         ref_map = {}
+        gold_names = {} # Internal temporary map: { "US": "United States" }
+
         try:
             with open(self.ISO_DATA_FILE, 'r', encoding='utf-8') as f:
                 data = json.load(f)
-                
+
+            # PASS 1: Find the "Gold" (preferred) name for every ISO Code
             for entry in data:
-                name = entry['Name']
                 code = entry['Code']
+                name = entry['Name']
+                pref = entry.get('Preference', 'preferred')
                 
-                # Map both Name and Code to the "Gold" Name
-                ref_map[name.lower()] = name
-                ref_map[code.lower()] = name
+                # If this is the preferred name (or the first one we find for this code),
+                # set it as the Gold standard for this ISO code.
+                if pref == 'preferred' or code not in gold_names:
+                    gold_names[code] = name
+
+            # PASS 2: Build the lookup map where every name/code points to the Gold name
+            for entry in data:
+                code = entry['Code']
+                name = entry['Name']
+                pref = entry.get('Preference', 'preferred')
+                is_preferred = (pref == 'preferred')
+
+                # We use the gold_names map to find the REAL canonical name
+                canonical_gold = gold_names[code]
+                
+                meta = {"canonical": canonical_gold, "is_preferred": is_preferred}
+                
+                # Now, 'united states of america' (non-preferred) 
+                # will still have 'United States' as its canonical field.
+                ref_map[name.lower()] = meta
+                ref_map[code.lower()] = meta
                 
             return ref_map
+        
         except FileNotFoundError:
             self.logger.error(f"ISO Data file not found: {self.ISO_DATA_FILE}")
             raise
+
 
     def _get_unmapped_strings(self):
         """Identifies unique country strings in library_artists that lack a mapping."""
@@ -67,15 +91,21 @@ class CountryManager:
 
         # 1. Exact/Alias Match (O(1) lookup)
         if clean_raw in self._reference_map:
-            return self._reference_map[clean_raw]
+                mapping = self._reference_map[clean_raw]
+                # If this specific entry is preferred, return it.
+                # If not, we still return the 'canonical' string, because 
+                # that is the 'Gold' name we want in our DB.
+                return mapping["canonical"]
 
         # 2. Fuzzy Match (Handles typos like 'Unite States')
-        # We check against the unique Gold names (values of the map)
-        canonical_names = list(set(self._reference_map.values()))
-        match, score = process.extractOne(raw_string, canonical_names)
-        
+        # We fuzzy match against EVERY key in our map (Names, Codes, and Synonyms)
+        all_known_keys = list(self._reference_map.keys())
+        match_key, score = process.extractOne(clean_raw, all_known_keys)
+    
         if score >= 90:
-            return match
+            # We found a hit on a known synonym/name/code!
+            # Now we "hop" from that hit to the canonical version.
+            return self._reference_map[match_key]["canonical"]
 
         return None
 
@@ -157,29 +187,45 @@ class CountryManager:
         return result.rowcount
 
     def _update_item_tag_links(self):
-        """Updates item_tags to point to canonical country tag IDs."""
-        self.logger.info("Synchronizing item_tags with normalized country mappings...")
-        sql = """
-            UPDATE item_tags
-            SET tag_id = (
-                SELECT m.canonical_tag_id
-                FROM tag_map m
-                JOIN taxonomy_tags t_old ON m.raw_tag_name = t_old.tag_name
-                WHERE t_old.tag_id = item_tags.tag_id
-                  AND t_old.tag_type = 'Country'
-                  AND m.library_id = ?
-            )
+        """Updates item_tags to point to canonical country tag IDs without collisions."""
+        self.logger.info("Merging item_tags to canonical country mappings...")
+        
+        # 1. INSERT the new canonical relationships. 
+        # 'OR IGNORE' handles cases where the canonical link already exists.
+        insert_sql = """
+            INSERT OR IGNORE INTO item_tags (item_guid, tag_id)
+            SELECT it.item_guid, m.canonical_tag_id
+            FROM item_tags it
+            JOIN taxonomy_tags t_old ON it.tag_id = t_old.tag_id
+            JOIN tag_map m ON t_old.tag_name = m.raw_tag_name
+            WHERE t_old.tag_type = 'Country'
+            AND m.library_id = ?
+            AND t_old.tag_id != m.canonical_tag_id
+        """
+        
+        # 2. DELETE the old "messy" relationships.
+        delete_sql = """
+            DELETE FROM item_tags
             WHERE EXISTS (
-                SELECT 1
-                FROM tag_map m
-                JOIN taxonomy_tags t_old ON m.raw_tag_name = t_old.tag_name
-                WHERE t_old.tag_id = item_tags.tag_id
-                  AND t_old.tag_type = 'Country'
-                  AND m.library_id = ?
+                SELECT 1 FROM taxonomy_tags t
+                JOIN tag_map m ON t.tag_name = m.raw_tag_name
+                WHERE t.tag_id = item_tags.tag_id
+                AND t.tag_type = 'Country'
+                AND m.library_id = ?
+                AND t.tag_id != m.canonical_tag_id
             )
         """
-        result = self.db.execute(sql, (self.library_id, self.library_id))
-        return result.rowcount
+
+        # Execute inside a transaction
+        cursor = self.db.cursor()
+        cursor.execute(insert_sql, (self.library_id,))
+        inserted = cursor.rowcount
+        
+        cursor.execute(delete_sql, (self.library_id,))
+        deleted = cursor.rowcount
+        
+        self.logger.info(f"Merged {inserted} tags and removed {deleted} legacy links.")
+        return inserted
 
     def _cleanup_orphan_tags(self):
         """Deletes non-canonical country tags that are no longer referenced."""
@@ -203,14 +249,14 @@ class CountryManager:
         """
         self.logger.info("Starting country data normalization transaction.")
         try:
-            artists_updated = self._update_artist_countries()
-            self.logger.info(f"Updated {artists_updated} artists with normalized country names.")
-            tags_remapped = self._update_item_tag_links()
-            self.logger.info(f"Re-mapped {tags_remapped} entries in item_tags.")
-            tags_cleaned = self._cleanup_orphan_tags()
-            self.logger.info(f"Cleaned up {tags_cleaned} orphaned country tags.")
-            self.db.commit()
-            self.logger.info("Country normalization transaction committed successfully.")
+            with self.db:
+                artists_updated = self._update_artist_countries()
+                self.logger.info(f"Updated {artists_updated} artists with normalized country names.")
+                tags_remapped = self._update_item_tag_links()
+                self.logger.info(f"Re-mapped {tags_remapped} entries in item_tags.")
+                tags_cleaned = self._cleanup_orphan_tags()
+                self.logger.info(f"Cleaned up {tags_cleaned} orphaned country tags.")
+                self.logger.info("Country normalization transaction committed successfully.")
         except Exception as e:
             self.logger.error(f"Country normalization failed. Rolling back transaction. Error: {e}")
             self.db.rollback()
