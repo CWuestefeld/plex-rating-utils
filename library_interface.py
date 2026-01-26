@@ -9,8 +9,13 @@ class LibraryInterface:
     def __init__(self, plex_section: MusicSection, db_connection, library_id: int):
         self.plex = plex_section
         self.db = db_connection
-        self.library_id = library_id
+        self._library_id = library_id
         self.logger = logging.getLogger("LibraryInterface")
+
+    @property
+    def library_id(self) -> int:
+        """The unique ID for this library in the local database."""
+        return self._library_id
 
     @classmethod
     def initialize_interface(cls, config, db_connection):
@@ -80,7 +85,7 @@ class LibraryInterface:
         all_albums = self.plex.search(libtype='album')
 
         # 2. Map Albums to Artists in memory { artist_guid: [album_objects] }
-        print(f"Retrieving data from Plex. This may take a few moments.")
+        print(f"Retrieving data from Plex. This may take a few moments.\n")
         album_map: Dict[str, List] = {}
         for album in all_albums:
             # album.parentGuid is the unique anchor for the Artist
@@ -125,9 +130,14 @@ class LibraryInterface:
                     country_name = excluded.country_name,
                     description = excluded.description,
                     description_words = excluded.description_words
+                WHERE
+                    name != excluded.name OR
+                    country_name != excluded.country_name OR
+                    description != excluded.description OR
+                    description_words != excluded.description_words
             """
             self.db.execute(sql, (
-                self.library_id, artist.guid, artist.title, country, description, word_count
+                self._library_id, artist.guid, artist.title, country, description, word_count
             ))
         except Exception as e:
             print(f"artist error: {e}")
@@ -148,9 +158,14 @@ class LibraryInterface:
                     description = excluded.description,
                     description_words = excluded.description_words,
                     rating = excluded.rating
+                WHERE 
+                    title != excluded.title OR 
+                    release_date != excluded.release_date OR 
+                    description != excluded.description OR
+                    rating != excluded.rating;
             """
             self.db.execute(sql, (
-                self.library_id, 
+                self._library_id, 
                 artist_guid, 
                 album.guid, 
                 album.title, 
@@ -173,12 +188,12 @@ class LibraryInterface:
                 self.db.execute("""
                     INSERT OR IGNORE INTO taxonomy_tags (library_id, tag_name, tag_type, is_canonical)
                     VALUES (?, ?, ?, 0)
-                """, (self.library_id, tag.tag, tag_type))
+                """, (self._library_id, tag.tag, tag_type))
 
                 # 2. Link the tag to the item
                 cursor = self.db.execute(
                     "SELECT tag_id FROM taxonomy_tags WHERE tag_name = ? AND tag_type = ? AND library_id = ?",
-                    (tag.tag, tag_type, self.library_id)
+                    (tag.tag, tag_type, self._library_id)
                 )
                 row = cursor.fetchone()
                 if row:

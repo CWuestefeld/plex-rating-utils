@@ -14,6 +14,7 @@ from plexapi.server import PlexServer
 from tqdm import tqdm
 
 from library_interface import LibraryInterface
+from country_manager import CountryManager
 
 # --- Config & State loading ---
 APP_VERSION = "0.1.1"
@@ -139,6 +140,12 @@ def get_database():
         print(f"Error connecting to database: {e}")
         return None
 
+def maintenance_vacuum(dbconn):
+    print("Defragmenting database and reclaiming space...")
+    # VACUUM cannot run inside a transaction, so ensure no commits are pending
+    dbconn.execute("VACUUM")
+    print("Database optimized.")
+
 def get_library(dbconn):
     # Using the data in the configs, we then try to open the plex library that's specified. If that's successful, then we can proceed. 
     # Look for the specified library_name in the libraries table. If not found, add it to the table. 
@@ -195,8 +202,26 @@ def get_library(dbconn):
 
     return music
 
+def handle_menu():
+    while True:
+        print("\n 1: Extract Plex data")
+        print(" 2: Analyze Country data")
+        print(" 3: Normalize Country data")
+        print(" X: eXit")
+        
+        choice = input("\nSelect Option [1-3,X]: ").strip().upper()
+
+        if choice == 'X':
+            return choice
+        if choice in ('1', '2', '3'):
+            return int(choice)
+        print("\nInvalid option. Please try again.")
+
+
 def print_welcome():
     print(f"======= Descriptive data clean & enhance (v{APP_VERSION}) =======")
+    print( "-------  Copyright (c) 2026 Chris Wuestefeld  -------\n")
+
 
 def main():
     print_welcome()
@@ -215,7 +240,24 @@ def main():
             sys.exit(1)
 
         interface = LibraryInterface.initialize_interface(config, dbconn)
-        interface.extract_mirror()
+        cmgr = CountryManager(dbconn, interface.library_id)
+        
+
+        while True:
+            choice = handle_menu()
+            if choice == 'X':
+                break
+            if choice == 1:
+                print("extracting plex data")
+                interface.extract_mirror()
+            elif choice == 2:
+                print("analyzing country data")
+                cmgr.resolve_countries()
+            elif choice == 3:
+                print("applying country cleanup")
+                cmgr.apply_normalization()
+
+        maintenance_vacuum(dbconn)
 
     except:
         print("uncaught error, bailing")
