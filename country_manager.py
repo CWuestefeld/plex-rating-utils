@@ -67,7 +67,6 @@ class CountryManager:
             logger.error(f"ISO Data file not found: {self.ISO_DATA_FILE}")
             raise
 
-
     def _get_unmapped_strings(self):
         """Identifies unique country strings in library_artists that lack a mapping."""
         logger.debug("getting unmapped strings...")
@@ -271,3 +270,4 @@ class CountryManager:
             logger.error(f"Country normalization failed. Rolling back transaction. Error: {e}")
             self.db.rollback()
             raise
+

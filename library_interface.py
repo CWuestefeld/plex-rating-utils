@@ -154,17 +154,25 @@ class LibraryInterface:
         try:
             description = album.summary
             word_count = len(description.split()) if description else 0
-            critic_rating = album.rating  # Plex critic rating is 0-10 float
+            critic_rating = album.rating
+            
+            # Ensure we have a clean ISO string
+            rel_date = album.originallyAvailableAt.isoformat() if album.originallyAvailableAt else None
 
             sql = """
-                INSERT INTO library_albums (library_id, artist_guid, plex_guid, title, release_date, description, description_words, rating)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(library_id, artist_guid, plex_guid) DO UPDATE SET
+                INSERT INTO library_albums (
+                    library_id, artist_guid, rating_key, plex_guid, title, 
+                    release_date, original_release_date, description, description_words, rating
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(library_id, artist_guid, rating_key) DO UPDATE SET
                     title = excluded.title,
                     release_date = excluded.release_date,
                     description = excluded.description,
                     description_words = excluded.description_words,
                     rating = excluded.rating
+                -- Note: We DON'T overwrite original_release_date here so our 
+                -- propagation/manual fixes stay 'sticky'.
                 WHERE 
                     title != excluded.title OR 
                     release_date != excluded.release_date OR 
@@ -174,9 +182,11 @@ class LibraryInterface:
             self.db.execute(sql, (
                 self._library_id, 
                 artist_guid, 
+                album.ratingKey, 
                 album.guid, 
                 album.title, 
-                album.originallyAvailableAt,
+                rel_date,      # release_date
+                rel_date,      # original_release_date (Baseline)
                 description,
                 word_count,
                 critic_rating
@@ -213,6 +223,7 @@ class LibraryInterface:
             logger.info(f"{tag_type} tag update error: {e}")
             raise
 
+
     ####################################################################
     # data PUSH support
 
@@ -236,19 +247,21 @@ class LibraryInterface:
             if not db_artist:
                 continue
 
+            country_name, description = db_artist
+
             changes = {}
 
             # 2. Country Sync (The result of our Normalization work)
             # Note: p_artist.countries is a list of objects in the Plex API
             current_countries = [c.tag for c in p_artist.countries]
-            if db_artist['country_name']:
-                if db_artist['country_name'] not in current_countries:
+            if country_name:
+                if country_name not in current_countries:
                     # We overwrite the country list with our single 'Gold' country
-                    changes["country.value"] = db_artist['country_name']
+                    changes["country.value"] = country_name
 
             # 3. Bio/Description Sync
-            if db_artist['description'] and p_artist.summary != db_artist['description']:
-                changes["summary.value"] = db_artist['description']
+            if description and p_artist.summary != description:
+                changes["summary.value"] = description
 
             # 4. Push
             if changes:
@@ -274,12 +287,12 @@ class LibraryInterface:
         
         updates_made = 0
         
-        for p_album in tqdm(all_albums, desc="Syncing to Plex"):
+        for p_album in tqdm(all_albums, desc="Syncing Albums to Plex"):
             # 2. Find the 'Target' in our DB
             # We use a dictionary-style row factory for readability
             db_album = self.db.execute(
-                "SELECT description, rating, release_date FROM library_albums WHERE plex_guid = ?", 
-                (p_album.guid,)
+                "SELECT description, rating, release_date FROM library_albums WHERE rating_key = ?", 
+                (p_album.ratingKey,)
             ).fetchone()
 
             if not db_album:
@@ -287,14 +300,21 @@ class LibraryInterface:
 
             # 3. Build the Delta
             changes = {}
+
+            description, rating, release_date = db_album
             
             # Plex 'summary' vs local 'description'
-            if (db_album['description'] and p_album.summary != db_album['description']):
-                changes["summary.value"] = db_album['description']
+            if (description and p_album.summary != description):
+                changes["summary.value"] = description
                 
             # Plex 'rating' vs local 'rating'
-            if (db_album['rating'] is not None and p_album.userRating != db_album['rating']):
-                changes["userRating.value"] = db_album['rating']
+            if (rating is not None and p_album.rating != rating):
+                changes["rating.value"] = rating
+
+            # Convert the Plex object to ISO string to match the DB string exactly
+            plex_date_iso = p_album.originallyAvailableAt.isoformat() if p_album.originallyAvailableAt else None
+            if (release_date is not None and plex_date_iso != release_date):
+                changes["originallyAvailableAt.value"] = release_date
 
             # 4. Execute the Push
             if changes:
@@ -302,7 +322,7 @@ class LibraryInterface:
                     logger.info(f"[DRY RUN] Would update {p_album.title}: {list(changes.keys())}")
                 else:
                     try:
-                        logger.debug(f"[DRY RUN] Would update {p_album.title}: {list(changes.keys())}")
+                        logger.debug(f"Updating {p_album.title}: {list(changes.keys())}")
                         p_album.edit(**changes)
                         updates_made += 1
                     except Exception as e:
@@ -310,8 +330,127 @@ class LibraryInterface:
 
         logger.info(f"Sync complete. Updated {updates_made} albums.")
 
+    def _sync_tags_to_plex(self, dry_run=True):
+        logger.info("Streaming current Plex artist state, for tags...")
+        all_artists = self.plex.search(libtype='artist')
+        count = 0
+
+        for p_artist in tqdm(all_artists, desc="Syncing Tags"):
+            # We fetch the row; using [0] to avoid the 'tuple' error if RowFactory isn't set
+            row = self.db.execute(
+                "SELECT country_name FROM library_artists WHERE plex_guid = ?", 
+                (p_artist.guid,)
+            ).fetchone()
+
+            if row and row[0]:
+                target_country = row[0]
+                existing = [c.tag for c in p_artist.countries]
+                
+                # If the country list doesn't match our single target country
+                if len(existing) != 1 or existing[0] != target_country:
+                    if dry_run:
+                        logger.info(f"[DRY RUN] Tag Update {p_artist.title}: {existing} -> {target_country}")
+                    else:
+                        try:
+                            # This single call clears old countries, sets the new one, and LOCKS it
+                            p_artist.edit(**{"country.value": target_country})
+                            count += 1
+                        except Exception as e:
+                            logger.error(f"Failed to update tags for {p_artist.title}: {e}")
+        return count
+
+
     def sync_to_plex(self, dry_run=True):
         logger.info("Starting sync to Plex...")
         self._sync_artists_to_plex(dry_run)
         self._sync_albums_to_plex(dry_run)
+        self._sync_tags_to_plex(dry_run)
+        logger.info("Sync complete.")
         return
+
+
+    ####################################################################
+    # data CLEANSING
+
+    def propagate_album_metadata(self):
+        """
+        Aggregates the best metadata (longest bio, highest rating, earliest date)
+        across all versions of an album and broadcasts it back to all instances.
+        """
+        logger.info("Aggregating and broadcasting metadata across duplicate releases...")
+        
+        # 1. Identify groups of duplicates
+        try:
+            sql_find_twins = "SELECT plex_guid FROM library_albums GROUP BY plex_guid HAVING COUNT(*) > 1"
+            twin_guids = [row[0] for row in self.db.execute(sql_find_twins).fetchall()]
+        except Exception as e:
+            logger.error(f"database error: {e}")
+            return 0
+        
+        updated_groups = 0
+
+        for guid in tqdm(twin_guids, desc="Propagating Duplicates"):
+            # 2. Pass 1: Harvest the 'Golden' values from the group
+            sql_instances = """
+                SELECT rating_key, description, rating, release_date, original_release_date 
+                FROM library_albums WHERE plex_guid = ?
+            """
+
+            try:
+                instances = self.db.execute(sql_instances, (guid,)).fetchall()
+            except Exception as e:
+                logger.error(f"database error: {e}")
+                break
+            
+            gold_desc = ""
+            gold_rating = None
+            gold_original_date = None
+
+            for inst in instances:
+                rating_key, description, rating, release_date, original_release_date = inst
+                # Logic: Longest description wins
+                if description and len(description) > len(gold_desc):
+                    gold_desc = description
+                
+                # Logic: Highest rating wins
+                if rating is not None:
+                    if gold_rating is None or rating > gold_rating:
+                        gold_rating = rating
+                
+                # Logic: Earliest date found in either date column becomes the 'Original'
+                for date_val in [release_date, original_release_date]:
+                    if date_val:
+                        if gold_original_date is None or date_val < gold_original_date:
+                            gold_original_date = date_val
+
+            # 3. Pass 2: Broadcast the 'Golden' values to all members of the group
+            if gold_desc or gold_rating is not None or gold_original_date:
+
+                word_count = len(gold_desc.split()) if gold_desc else 0
+
+                try:
+                    # We update description, rating, and ONLY the original_release_date.
+                    # We leave 'release_date' alone to preserve the specific edition's history.
+                    update_sql = """
+                        UPDATE library_albums 
+                        SET description = ?, 
+                            description_words = ?, 
+                            rating = ?,
+                            original_release_date = ?
+                        WHERE plex_guid = ?
+                    """
+                    self.db.execute(update_sql, (
+                        gold_desc, 
+                        word_count, 
+                        gold_rating, 
+                        gold_original_date, 
+                        guid
+                    ))
+                    self.db.commit()
+                    updated_groups += 1
+
+                except Exception as e:
+                    logger.error(f"database error: {e}")
+
+        logger.info(f"Propagation complete. Synchronized {updated_groups} album groups.")
+        return updated_groups

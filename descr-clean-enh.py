@@ -244,13 +244,15 @@ def handle_menu():
         print("\n 1: Extract Plex data")
         print(" 2: Analyze Country data")
         print(" 3: Normalize Country data")
+        print(" 4: Aggregate Album Twins data")
+        print(" 9: Push data back to Plex")
         print(" X: eXit")
         
-        choice = input("\nSelect Option [1-3,X]: ").strip().upper()
+        choice = input("\nSelect Option [1-4,X]: ").strip().upper()
 
         if choice == 'X':
             return choice
-        if choice in ('1', '2', '3'):
+        if choice in ('1', '2', '3', '4', '9'):
             return int(choice)
         print("\nInvalid option. Please try again.")
 
@@ -291,6 +293,12 @@ def main():
             elif choice == 3:
                 logger.info("applying country cleanup")
                 cmgr.apply_normalization()
+            elif choice == 4:
+                logger.info("aggregating album twins data")
+                interface.propagate_album_metadata()
+            elif choice == 9:
+                logger.info("pushing data to Plex")
+                interface.sync_to_plex(True)
 
         maintenance_vacuum(dbconn)
 

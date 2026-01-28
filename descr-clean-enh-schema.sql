@@ -70,15 +70,17 @@ CREATE TABLE IF NOT EXISTS library_artists (
 
 CREATE TABLE IF NOT EXISTS library_albums (
     library_id INTEGER NOT NULL,
+    rating_key INTEGER NOT NULL, -- The specific library item ID
     artist_guid TEXT NOT NULL,
-    plex_guid TEXT NOT NULL,
+    plex_guid TEXT NOT NULL,    -- higher-level 
     title TEXT NOT NULL COLLATE NOCASE,
     release_date DATE,
+    original_release_date DATE, 
     description TEXT, 
     description_words INTEGER DEFAULT 0, -- Quick flag for Auditor logic
     rating real,
     -- Clustered by artist for fast discography matching
-    PRIMARY KEY (library_id, artist_guid, plex_guid),
+    PRIMARY KEY (library_id, artist_guid, rating_key),
     FOREIGN KEY (library_id, artist_guid) REFERENCES library_artists(library_id, plex_guid)
 ) WITHOUT ROWID;
 
@@ -148,8 +150,12 @@ CREATE TABLE IF NOT EXISTS identity_links (
 CREATE INDEX IF NOT EXISTS idx_library_artists_name ON library_artists(name);
 CREATE INDEX IF NOT EXISTS idx_source_artists_name ON source_artists(name);
 
+-- For quickly finding album twins
+CREATE INDEX IF NOT EXISTS idx_source_albums_plex_guid ON library_albums(plex_guid);
+
 -- For finding all raw tags that map to a canonical tag
 CREATE INDEX IF NOT EXISTS idx_tag_map_canonical_id ON tag_map(canonical_tag_id);
 
 -- For quickly finding all external links for a given Plex item
 CREATE INDEX IF NOT EXISTS idx_identity_links_plex_guid ON identity_links(plex_guid);
+
