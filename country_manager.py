@@ -107,7 +107,7 @@ class CountryManager:
         # We fuzzy match against EVERY key in our map (Names, Codes, and Synonyms)
         all_known_keys = list(self._reference_map.keys())
         match_key, score = process.extractOne(clean_raw, all_known_keys)
-    
+
         if score >= 90:
             # We found a hit on a known synonym/name/code!
             # Now we "hop" from that hit to the canonical version.
@@ -142,7 +142,7 @@ class CountryManager:
         
         self.db.commit()
 
-    def resolve_countries(self):
+    def resolve_countries(self, ai_interface=None):
         """Main execution loop for cleaning country data."""
         orphans = self._get_unmapped_strings()
         if not orphans:
@@ -167,12 +167,18 @@ class CountryManager:
 
         # Future Phase: Handle remaining semantic mismatches
         if ai_candidates:
-            self._resolve_with_ai(ai_candidates)
+            self._resolve_with_ai(ai_candidates, ai_interface)
 
-    def _resolve_with_ai(self, candidates):
-        """Placeholder for Gemini semantic resolution."""
-        # TODO: Implement batch processing with Gemini 1.5 Flash
-        pass
+    def _resolve_with_ai(self, unmatched, ai_interface=None):
+        if unmatched and ai_interface:
+            logger.info(f"Asking AI to resolve {len(unmatched)} ambiguous country strings...")
+            suggestions = ai_interface.resolve_unmatched_countries(unmatched)
+            
+            for original, canonical in suggestions.items():
+                if canonical:
+                    logger.info(f"AI Resolution: '{original}' -> '{canonical}'")
+                    # Apply the update to your item_tags or library_artists table
+                    self._commit_mapping(original, canonical)
 
     def _update_artist_countries(self):
         """Updates the library_artists mirror with canonical country names."""

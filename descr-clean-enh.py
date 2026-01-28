@@ -55,7 +55,7 @@ logger = logging.getLogger(__name__)
 
 from library_interface import LibraryInterface
 from country_manager import CountryManager
-
+from ai_interface import AIInterface
 
 def load_json(path, default):
     if not os.path.exists(path): 
@@ -276,9 +276,9 @@ def main():
             dbconn.close()
             sys.exit(1)
 
-        interface = LibraryInterface.initialize_interface(config, dbconn)
-        cmgr = CountryManager(dbconn, interface.library_id)
-        
+        lib_interface = LibraryInterface.initialize_interface(config, dbconn)
+        cmgr = CountryManager(dbconn, lib_interface.library_id)
+        ai_interface = AIInterface()
 
         while True:
             choice = handle_menu()
@@ -286,19 +286,19 @@ def main():
                 break
             if choice == 1:
                 logger.info("extracting plex data")
-                interface.extract_mirror()
+                lib_interface.extract_mirror()
             elif choice == 2:
                 logger.info("analyzing country data")
-                cmgr.resolve_countries()
+                cmgr.resolve_countries( ai_interface )
             elif choice == 3:
                 logger.info("applying country cleanup")
                 cmgr.apply_normalization()
             elif choice == 4:
                 logger.info("aggregating album twins data")
-                interface.propagate_album_metadata()
+                lib_interface.propagate_album_metadata()
             elif choice == 9:
                 logger.info("pushing data to Plex")
-                interface.sync_to_plex(True)
+                lib_interface.sync_to_plex(True)
 
         maintenance_vacuum(dbconn)
 
