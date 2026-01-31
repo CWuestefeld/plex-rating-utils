@@ -12,7 +12,7 @@ from plexapi.server import PlexServer
 from tqdm import tqdm
 
 # --- Config & State loading ---
-APP_VERSION = "1.2.1"
+APP_VERSION = "1.3.1"
 CONFIG_FILE = 'config.json'
 STATE_FILE = 'plex_state.json'
 
@@ -42,7 +42,9 @@ def get_config():
                 "COOLDOWN_BATCH": 25,
                 "COOLDOWN_SLEEP": 5,
                 "ALBUM_INHERITANCE_GRAVITY": 0.2,
-                "TRACK_INHERITANCE_GRAVITY": 0.3  
+                "TRACK_INHERITANCE_GRAVITY": 0.3,  
+                "BULK_ARTIST_FILENAME": "./artist_ratings.csv",
+                "BULK_ALBUM_FILENAME": "./album_ratings.csv"
             }
             try:
                 with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
@@ -485,49 +487,44 @@ def process_layer(label, items, global_mean, start_char="", direction="UP"):
     print(f"Pass: {updated_count} Updated, {skipped_count} Drift-Skipped, {hijacked_count} Hijacks Resolved.")
     return updated_count
 
-def main():
-    automation_choice = None
-    if len(sys.argv) > 1:
-        try:
-            automation_choice = int(sys.argv[1])
-        except ValueError:
-            print(f"Invalid argument: {sys.argv[1]}. Use 0-8."); return
-        
-    try:
-        plex = PlexServer(config['PLEX_URL'], config['PLEX_TOKEN'])
-        music = plex.library.section(config['LIBRARY_NAME'])
-    except Exception as e:
-        print(f"Plex Connection Error: {e}"); return
+def handle_admin_menu(music):
+    """Displays and handles the Admin Tools sub-menu."""
+    while True:
+        print("\n--- Admin Tools ---")
+        print(" 1: Verify State")
+        print(" 2: Cleanup/Undo")
+        print(" 3: Reconstruct State")
+        print(" -------------------")
+        choice = input("Select Option or <Enter> to return: ").strip().lower()
 
-    # print(f"Connected to Library: {music.title} (UUID: {music.uuid})")
-    load_state(music)
+        if choice == '':
+            return
+        elif choice == '1':
+            run_verification(music)
+        elif choice == '2':
+            run_cleanup(music)
+        elif choice == '3':
+            run_reconstruction(music)
+        else:
+            print("Invalid option.")
 
-    if automation_choice is None:
-        print(f"\n======= Bayesian Music Rating Engine (v{APP_VERSION}) =======")
-        print(   "-------  Copyright (c) 2026 Chris Wuestefeld  -------\n")
-        print(" 0: FULL SEQUENCE (Runs Options 1-4)")
-        print(" ----------------------------------------")
-        print(" 1: Album-Up   (Track Ratings -> Albums)")
-        print(" 2: Artist-Up  (Album Ratings -> Artists)")
-        print(" 3: Album-Down (Artist Ratings -> Albums)")
-        print(" 4: Track-Down (Album Ratings -> Tracks)")
-        print(" ----------------------------------------")
-        print(" 5: Verify State   | 6: Cleanup/Undo")
-        print(" 7: Power Rankings | 8: Reconstruct State")
-        try:
-            choice = int(input("\nSelect Option [0-8]: ") or 0)
-            start_char = input("Start Artist Letter (Empty for ALL): ") or ""
-        except ValueError: return
-    else:
-        choice = automation_choice
-        start_char = "" # Automation assumes a full run of the selected option
+def handle_bulk_actions_menu(music):
+    """Displays and handles the Bulk Actions sub-menu."""
+    while True:
+        print("\n--- Bulk Actions ---")
+        print(" 1: Power Rankings")
+        print(" --------------------")
+        choice = input("Select Option or <Enter> to return: ").strip().lower()
 
-    # Handle Administrative Options (5-8)
-    if choice == 5: run_verification(music); return
-    if choice == 6: run_cleanup(music); return
-    if choice == 7: run_report(music); return
-    if choice == 8: run_reconstruction(music); return
+        if choice == '':
+            return
+        elif choice == '1':
+            run_report(music)
+        else:
+            print("Invalid option.")
 
+def run_processing_phases(music, choice, start_char):
+    """Runs the core Bayesian inference phases (0-4)."""
     # Establish Prior
     prior, _ = get_library_prior(music)
     
@@ -547,7 +544,7 @@ def main():
         # Run ONLY the selected phase
         workload = [phases[choice - 1]]
     else:
-        print("Invalid choice.")
+        print("Invalid processing choice.")
         return
 
     total_updated = 0
@@ -569,6 +566,80 @@ def main():
     print("\n" + "="*45 + "\nRUN SUMMARY\n" + "="*45)
     print(f"Total Items Updated:  {total_updated}\nStart Global Prior:   {initial_prior/2:.2f} stars")
     print(f"End Global Prior:     {final_prior/2:.2f} stars\nPrior Shift:          {(final_prior - initial_prior)/2:+.4f} stars\n" + "="*45)
+
+def main():
+    automation_choice = None
+    if len(sys.argv) > 1:
+        try:
+            automation_choice = int(sys.argv[1])
+        except ValueError:
+            print(f"Invalid argument: {sys.argv[1]}. Use 0-8."); return
+
+    try:
+        plex = PlexServer(config['PLEX_URL'], config['PLEX_TOKEN'])
+        music = plex.library.section(config['LIBRARY_NAME'])
+    except Exception as e:
+        print(f"Plex Connection Error: {e}"); return
+
+    load_state(music)
+
+    # --- AUTOMATION MODE ---
+    # For backward compatibility, run old numeric options directly
+    if automation_choice is not None:
+        print(f"Running in automation mode for option: {automation_choice}")
+        choice = automation_choice
+        
+        if 0 <= choice <= 4:
+            run_processing_phases(music, choice, start_char="")
+        elif choice == 5: run_verification(music)
+        elif choice == 6: run_cleanup(music)
+        elif choice == 7: run_report(music)
+        elif choice == 8: run_reconstruction(music)
+        else:
+            print(f"Invalid automation option: {choice}")
+        return
+
+    # --- INTERACTIVE MODE ---
+    while True:
+        print(f"\n======= Bayesian Music Rating Engine (v{APP_VERSION}) =======")
+        print(   "-------  Copyright (c) 2026 Chris Wuestefeld  -------\n")
+        print(" 0: FULL SEQUENCE (Runs Options 1-4)")
+        print(" ----------------------------------------")
+        print(" 1: Album-Up   (Track Ratings -> Albums)")
+        print(" 2: Artist-Up  (Album Ratings -> Artists)")
+        print(" 3: Album-Down (Artist Ratings -> Albums)")
+        print(" 4: Track-Down (Album Ratings -> Tracks)")
+        print(" ----------------------------------------")
+        print(" A: Admin Tools")
+        print(" B: Bulk Actions")
+        print(" ----------------------------------------")
+        print(" X: eXit")
+        
+        choice_str = input("\nSelect Option: ").strip().upper()
+
+        if choice_str == 'X':
+            break # Exit the main loop
+        
+        if choice_str == 'A':
+            handle_admin_menu(music)
+            continue # Go back to main menu
+        
+        if choice_str == 'B':
+            handle_bulk_actions_menu(music)
+            continue # Go back to main menu
+
+        try:
+            # Default to 0 (FULL SEQUENCE) if user just hits enter
+            choice = int(choice_str or 0)
+            if not (0 <= choice <= 4):
+                print("Invalid choice. Please select from 0-4, A, B, or X.")
+                continue
+        except ValueError:
+            print("Invalid choice. Please select from 0-4, A, B, or X.")
+            continue
+        
+        start_char = input("Start Artist Letter (Empty for ALL): ") or ""
+        run_processing_phases(music, choice, start_char)
 
 if __name__ == "__main__":
     main()
