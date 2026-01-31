@@ -51,7 +51,9 @@ And if Plex's metadata includes a rating from critics, then this data can be sim
      "INFERRED_TAG": "Rating_Inferred",
      "DYNAMIC_PRECISION": true,
      "COOLDOWN_BATCH": 25,
-     "COOLDOWN_SLEEP": 5
+     "COOLDOWN_SLEEP": 5,
+     "ALBUM_INHERITANCE_GRAVITY": 0.2,
+     "TRACK_INHERITANCE_GRAVITY": 0.3
    }
 ```
 If no config file is found, it'll offer to create a default one for you. You'll still need to update it, especially 
@@ -184,6 +186,9 @@ COOLDOWN_BATCH
 
 COOLDOWN_SLEEP
 : This works together with the _BATCH setting. The _SLEEP value specifies how many seconds to wait.
+
+ALBUM_INHERITANCE_GRAVITY and TRACK_INHERITANCE_GRAVITY
+: It would be pretty surprising if a 5-star artist's albums were *all* 5-stars, or that a 5-star album's tracks were *all* 5-stars. When propagating ratings downwards, these settings control how much the global average "pulls" the inherited *manual* rating towards it. A value of 0 means direct inheritance (e.g., a 5-star album makes all its unrated tracks 5-stars). A value of 1 means the global average is inherited. This doesn't affect calculations when the parent's rating is inferred, since those should already have a discount baked in by way of the ``CONFIDENCE_C`` factor.
 
 # Copyright and licensing
 Code is copyright (c) 2026 by Chris Wuestefeld

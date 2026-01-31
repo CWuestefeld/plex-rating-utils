@@ -3,6 +3,10 @@ config.json
 
 # Local State / Shadow DB
 *plex_state.json
+*.csv
+*.xlsx
+*.sqlite
+*.log
 
 # Python environment and cache
 __pycache__/
@@ -12,6 +16,7 @@ __pycache__/
 env/
 venv/
 ENV/
+.env
 
 # OS generated files
 .DS_Store
@@ -21,3 +26,4 @@ Thumbs.db
 *.bak
 *.backup
 .geminicontext
+toys/

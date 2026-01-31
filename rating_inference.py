@@ -12,7 +12,7 @@ from plexapi.server import PlexServer
 from tqdm import tqdm
 
 # --- Config & State loading ---
-APP_VERSION = "1.1.1"
+APP_VERSION = "1.2.1"
 CONFIG_FILE = 'config.json'
 STATE_FILE = 'plex_state.json'
 
@@ -40,7 +40,9 @@ def get_config():
                 "INFERRED_TAG": "Rating_Inferred",
                 "DYNAMIC_PRECISION": True,
                 "COOLDOWN_BATCH": 25,
-                "COOLDOWN_SLEEP": 5
+                "COOLDOWN_SLEEP": 5,
+                "ALBUM_INHERITANCE_GRAVITY": 0.2,
+                "TRACK_INHERITANCE_GRAVITY": 0.3  
             }
             try:
                 with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
@@ -133,7 +135,7 @@ def calculate_dynamic_epsilon(item_count):
     """
     if not config.get('DYNAMIC_PRECISION', True): return 0.02
     if item_count < 1000: return 0.02
-    return round(0.05 * (math.log10(item_count)-2), 3)
+    return round(0.02 * (math.log10(item_count)-2), 3)
 
 def get_library_prior(music, silent=False):
     """Calculates the Bayesian Prior using only Manual (User) ratings."""
@@ -181,7 +183,6 @@ def run_reconstruction(music):
         print(f"\nSuccess: Restored {restored_count} total items to plex_state.json.")
     else:
         print(f"\nReconstruction finished. Items found: {restored_count}")
-
 
 def run_report(music):
     """Option 7: Generates a Top/Bottom Artist report based on Bayesian ratings."""
@@ -329,6 +330,14 @@ def process_layer(label, items, global_mean, start_char="", direction="UP"):
         print("Error: CONFIDENCE_C must be a positive number. Defaulting to 3.0.")
         c_val = 3.0
     
+    if label == 'Album':
+        gravity = config.get('ALBUM_INHERITANCE_GRAVITY', 0.2)
+    elif label == 'Track':
+        gravity = config.get('TRACK_INHERITANCE_GRAVITY', 0.3)
+    else:
+        gravity = 0.0
+
+
     # Calculate threshold for this run
     epsilon = calculate_dynamic_epsilon(len(items))
     print(f"Dynamic Precision: Accepting drift up to {epsilon} stars for this {label} pass.")
@@ -416,7 +425,15 @@ def process_layer(label, items, global_mean, start_char="", direction="UP"):
                 try:
                     parent = item.artist() if label == 'Album' else item.album()
                     if parent and parent.userRating and parent.userRating > 0:
-                        inferred_rating = parent.userRating
+                        parent_key = str(parent.ratingKey)
+                        parent_rating = parent.userRating
+
+                        # If parent's rating is inferred (in state), inherit directly.
+                        # Otherwise, it's a manual rating, so apply gravity.
+                        if parent_key in state:
+                            inferred_rating = (parent_rating * (1 - gravity)) + (global_mean * gravity)
+                        else:
+                            inferred_rating = parent_rating
                 except: continue
 
             # --- CASE D/E: DRIFT VS UPDATE ---
