@@ -221,14 +221,6 @@ def build_twin_clusters(music, state, twin_config):
 
     pbar = tqdm(all_rated_tracks, desc="Scanning for twins", unit="track")
     for track in pbar:
-        if exclude_live:
-            try:
-                # Check if the album is a Live album via subformats
-                if 'Live' in track.parent().subformats:
-                    continue
-            except Exception:
-                # If genres can't be fetched, proceed without the check for this track.
-                pass
         artist = _clean_artist(track)
         if not artist: continue
         
@@ -253,12 +245,24 @@ def build_twin_clusters(music, state, twin_config):
     final_clusters = []
     tolerance = twin_config.get('DURATION_TOLERANCE_SEC', 5)
     
-    for cluster in clusters:
+    for cluster in tqdm(clusters, desc="Verifying clusters", unit="cluster"):
         if not cluster or not all(t['duration'] > 0 for t in cluster): continue
         
         median_duration = statistics.median([t['duration'] for t in cluster])
         filtered_cluster = [t for t in cluster if abs(t['duration'] - median_duration) <= tolerance]
         
+        if exclude_live and len(filtered_cluster) >= 2:
+            non_live_cluster = []
+            for t in filtered_cluster:
+                try:
+                    # Check if the album is a Live album via subformats
+                    if 'Live' in t['item'].album().subformats:
+                        continue
+                except Exception:
+                    pass
+                non_live_cluster.append(t)
+            filtered_cluster = non_live_cluster
+
         if len(filtered_cluster) >= 2: final_clusters.append(filtered_cluster)
             
     print(f"Found {len(final_clusters)} potential twin clusters.")
@@ -542,11 +546,14 @@ def run_bulk_import(music, item_type):
                             new_rating_10_point = max(0.0, min(10.0, new_rating_10_point))
                         
                         current_rating = item.userRating or 0.0
-                        # TODO! This is a hack to avoid updating ratings for now
+                        
                         rating_changed = (
                                             (new_rating_10_point is None and current_rating != 0.0) or 
                                             (new_rating_10_point is not None and abs(current_rating - new_rating_10_point) > 0.01)
                                         )
+
+                        # TODO! This is a hack to avoid updating ratings for now
+                        rating_changed = False
 
                         if rating_changed:
                             if not dry_run: item.rate(new_rating_10_point)
