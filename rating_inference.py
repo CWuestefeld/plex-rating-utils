@@ -9,11 +9,12 @@ import sys
 import math
 import time
 import csv
+import statistics
 from plexapi.server import PlexServer
 from tqdm import tqdm
 
 # --- Config & State loading ---
-APP_VERSION = "1.3.1"
+APP_VERSION = "1.4.0"
 CONFIG_FILE = 'config.json'
 STATE_FILE = 'plex_state.json'
 
@@ -46,7 +47,16 @@ def get_config():
                 "TRACK_INHERITANCE_GRAVITY": 0.3,  
                 "BULK_ARTIST_FILENAME": "./artist_ratings.csv",
                 "BULK_ALBUM_FILENAME": "./album_ratings.csv",
-                "BULK_TRACK_FILENAME": "./track_ratings.csv"
+                "BULK_TRACK_FILENAME": "./track_ratings.csv",
+                "TWIN_LOGIC": {
+                    "ENABLED": True,
+                    "DURATION_TOLERANCE_SEC": 5,
+                    "EXCLUDE_KEYWORDS": ["live", "demo", "reprise", "instrumental", "commentary", "acoustic", "remix"],
+                    "EXCLUDE_PARENTHESES": True,
+                    "EXCLUDE_LIVE_ALBUMS": True,
+                    "TWIN_TAG": "Twin",
+                    "DEBUG_CLUSTERS": False
+                }
             }
             try:
                 with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
@@ -82,12 +92,13 @@ def load_state(library):
     
     if not os.path.exists(STATE_FILE): return
 
-    data = load_json(STATE_FILE, {})
+    raw_data = load_json(STATE_FILE, {})
     
     # Detect format: New (dict with 'ratings') vs Old (flat dict)
-    if 'ratings' in data:
-        loaded_uuid = data.get('library_uuid')
-        loaded_version = data.get('version')
+    ratings_data = {}
+    if 'ratings' in raw_data:
+        loaded_uuid = raw_data.get('library_uuid')
+        loaded_version = raw_data.get('version')
         
         if loaded_version != APP_VERSION:
             print(f"Note: State file version ({loaded_version}) differs from program version ({APP_VERSION}).")
@@ -99,10 +110,30 @@ def load_state(library):
             confirm = input("Continuing may lead to incorrect ratings. Proceed? (y/n): ").lower()
             if confirm != 'y': sys.exit(1)
             
-        state.update(data.get('ratings', {}))
+        ratings_data = raw_data.get('ratings', {})
     else:
         print("Note: Legacy state file format detected. Will upgrade on next save.")
-        state.update(data)
+        ratings_data = raw_data
+
+    # Check for old rating format (float) and migrate
+    if ratings_data:
+        first_key = next(iter(ratings_data))
+        if isinstance(ratings_data[first_key], (int, float)):
+            print("Old state file format detected. This script needs to upgrade it.")
+            confirm = input("A backup will not be made. Is it OK to upgrade the file on the next save? (y/n): ").lower()
+            if confirm != 'y':
+                print("Cannot proceed without upgrading state file. Exiting.")
+                sys.exit(1)
+            
+            print("Migrating state file format in memory...")
+            migrated_ratings = {}
+            for key, rating in tqdm(ratings_data.items(), desc="Migrating State"):
+                migrated_ratings[key] = {'r': rating, 't': 0}
+            state.update(migrated_ratings)
+            return # We are done here
+
+    state.update(ratings_data)
+
 
 def save_state():
     """Saves the current inference registry to disk"""
@@ -148,12 +179,170 @@ def get_library_prior(music, silent=False):
     manual_ratings = []
     for t in all_rated:
         key = str(t.ratingKey)
-        current_val = t.userRating
-        if key not in state or abs(state[key] - current_val) > 0.01:
+        current_val = t.userRating or 0.0
+        # A rating is manual if it's not in our state file, or if the value has been changed by the user
+        if key not in state or abs(state[key]['r'] - current_val) > 0.01:
             if key in state: del state[key]
             manual_ratings.append(current_val)
     prior = sum(manual_ratings) / len(manual_ratings) if manual_ratings else 6.0
     return prior, len(manual_ratings)
+
+def _clean_title(title, album_title, twin_config):
+    if not title: return None
+    
+    title = title.lower().strip()
+    album_title = album_title.lower().strip() if album_title else ""
+
+    if twin_config.get('EXCLUDE_PARENTHESES', True):
+        if any(p in title for p in "()[]") or any(p in album_title for p in "()[]"):
+            return None
+
+    exclude_keywords = twin_config.get('EXCLUDE_KEYWORDS', [])
+    # Check for whole word matches
+    title_words = f" {title} "
+    if any(f" {word} " in title_words for word in exclude_keywords):
+        return None
+
+    return title
+
+def _clean_artist(track):
+    artist = track.originalTitle or track.grandparentTitle
+    if not track.originalTitle and track.grandparentTitle and 'various artists' in track.grandparentTitle.lower():
+        return None
+    return artist.lower().strip() if artist else None
+
+def build_twin_clusters(music, state, twin_config):
+    """Scans the library to find potential duplicate tracks ("twins") based on artist and title matching."""
+    print("Building twin cluster registry...")
+    registry = {}
+    all_rated_tracks = music.searchTracks(filters={'userRating>>': 0})
+    
+    exclude_live = twin_config.get('EXCLUDE_LIVE_ALBUMS', True)
+
+    pbar = tqdm(all_rated_tracks, desc="Scanning for twins", unit="track")
+    for track in pbar:
+        if exclude_live:
+            try:
+                # Check if the album is a Live album via subformats
+                if 'Live' in track.parent().subformats:
+                    continue
+            except Exception:
+                # If genres can't be fetched, proceed without the check for this track.
+                pass
+        artist = _clean_artist(track)
+        if not artist: continue
+        
+        title = _clean_title(track.title, track.parentTitle, twin_config)
+        if not title: continue
+
+        twin_key = (artist, title)
+        key = str(track.ratingKey)
+        
+        track_data = {
+            'item': track,
+            'ratingKey': key,
+            'rating': track.userRating,
+            'is_manual': key not in state,
+            'duration': track.duration // 1000 if track.duration else 0
+        }
+        
+        if twin_key not in registry: registry[twin_key] = []
+        registry[twin_key].append(track_data)
+
+    clusters = [v for v in registry.values() if len(v) >= 2]
+    final_clusters = []
+    tolerance = twin_config.get('DURATION_TOLERANCE_SEC', 5)
+    
+    for cluster in clusters:
+        if not cluster or not all(t['duration'] > 0 for t in cluster): continue
+        
+        median_duration = statistics.median([t['duration'] for t in cluster])
+        filtered_cluster = [t for t in cluster if abs(t['duration'] - median_duration) <= tolerance]
+        
+        if len(filtered_cluster) >= 2: final_clusters.append(filtered_cluster)
+            
+    print(f"Found {len(final_clusters)} potential twin clusters.")
+    return final_clusters
+
+def process_twins(music, state, config):
+    """Phase 5: Identifies and unifies ratings for duplicate tracks."""
+    twin_config = config.get('TWIN_LOGIC', {})
+    if not twin_config.get('ENABLED', False):
+        print("Twin Logic is disabled in config.json.")
+        return 0
+
+    print("\n--- Phase 5: Twin Logic Processing ---")
+    clusters = build_twin_clusters(music, state, twin_config)
+    if not clusters: return 0
+
+    dry_run = config.get('DRY_RUN', True)
+    twin_tag_name = twin_config.get('TWIN_TAG', '').strip()
+    inferred_tag_name = config.get('INFERRED_TAG', '').strip()
+    epsilon = calculate_dynamic_epsilon(len(music.searchTracks()))
+    updated_count, batch_counter = 0, 0
+    cooldown_batch = config.get('COOLDOWN_BATCH', 25)
+    cooldown_sleep = config.get('COOLDOWN_SLEEP', 5)
+
+    pbar = tqdm(clusters, desc="Processing Twin Clusters", unit="cluster")
+    for cluster in pbar:
+        try:
+            manual_anchors = [t for t in cluster if t['is_manual']]
+            target_rating, new_twin_flag = 0.0, 0
+
+            if manual_anchors:
+                target_rating = statistics.mean(t['rating'] for t in manual_anchors)
+                new_twin_flag = 2
+                pbar.set_postfix_str("Manual Anchor")
+            else:
+                target_rating = statistics.mean(t['rating'] for t in cluster)
+                new_twin_flag = 1
+                pbar.set_postfix_str("Inferred Consensus")
+
+            for track_data in cluster:
+                item = track_data['item']
+                key = track_data['ratingKey']
+                current_rating = track_data['rating'] or 0.0
+                
+                final_rating = current_rating if (new_twin_flag == 2 and track_data['is_manual']) else target_rating
+
+                if abs(current_rating - final_rating) > epsilon:
+                    updated_count += 1
+                    batch_counter += 1
+                    tqdm.write(f"  {'[DRY RUN] ' if dry_run else ''}Twin Update for '{item.title}': {current_rating/2:.2f} -> {final_rating/2:.2f}")
+                    
+                    if not dry_run:
+                        item.rate(final_rating)
+                        # Apply inferred tag if configured
+                        if inferred_tag_name and inferred_tag_name not in [m.tag for m in item.moods]:
+                            item.addMood(inferred_tag_name)
+                        # Apply twin tag if configured
+                        if twin_tag_name and twin_tag_name not in [m.tag for m in item.moods]:
+                            item.addMood(twin_tag_name)
+                
+                if not dry_run:
+                    state[key] = {'r': final_rating, 't': new_twin_flag}
+
+            if twin_config.get('DEBUG_CLUSTERS', False):
+                tqdm.write(f"\n--- CLUSTER DEBUG ---\n  Tracks: {[t['item'].title for t in cluster]}")
+                tqdm.write(f"  Ratings: {[t['rating']/2 for t in cluster]}\n  Type: {'Manual Anchor' if manual_anchors else 'Inferred'}\n  Target: {target_rating/2:.2f}\n")
+
+            if batch_counter >= cooldown_batch:
+                save_state()
+                pbar.set_description(f"Twin Clusters: --pause {cooldown_sleep}s--")
+                time.sleep(cooldown_sleep)
+                batch_counter = 0
+                pbar.set_description("Processing Twin Clusters")
+
+        except KeyboardInterrupt:
+            if handle_pause(pbar) == 'q':
+                pbar.close(); save_state(); print("\n\n>>> Graceful Exit: Twin processing interrupted."); sys.exit(0)
+            batch_counter = 0
+        except Exception as e:
+            tqdm.write(f"Error processing a twin cluster: {e}")
+
+    if not dry_run: save_state()
+    print(f"Twin Logic complete. Updated {updated_count} tracks across {len(clusters)} clusters.")
+    return updated_count
 
 def run_reconstruction(music):
     """Option 8: Rebuilds state from Artists, Albums, AND Tracks."""
@@ -178,8 +367,8 @@ def run_reconstruction(music):
             if item.userRating and item.userRating > 0:
                 if key not in state:
                     restored_count += 1
-                    if not config.get('DRY_RUN', True):
-                        state[key] = item.userRating
+                    if not config.get('DRY_RUN', True): # Mark as inferred, not a twin
+                        state[key] = {'r': item.userRating, 't': 0}
                     pbar.set_postfix(restored=restored_count)
 
     if restored_count > 0 and not config.get('DRY_RUN', True):
@@ -353,8 +542,11 @@ def run_bulk_import(music, item_type):
                             new_rating_10_point = max(0.0, min(10.0, new_rating_10_point))
                         
                         current_rating = item.userRating or 0.0
-                        rating_changed = (new_rating_10_point is None and current_rating != 0.0) or \
-                                         (new_rating_10_point is not None and abs(current_rating - new_rating_10_point) > 0.01)
+                        # TODO! This is a hack to avoid updating ratings for now
+                        rating_changed = (
+                                            (new_rating_10_point is None and current_rating != 0.0) or 
+                                            (new_rating_10_point is not None and abs(current_rating - new_rating_10_point) > 0.01)
+                                        )
 
                         if rating_changed:
                             if not dry_run: item.rate(new_rating_10_point)
@@ -367,13 +559,13 @@ def run_bulk_import(music, item_type):
                         should_be_inferred = (new_type == 'inferred' and new_rating_10_point is not None)
 
                         if should_be_inferred and (not is_inferred or rating_changed):
-                            if not dry_run:
-                                state[key] = new_rating_10_point
+                            if not dry_run: # Mark as inferred, not a twin
+                                state[key] = {'r': new_rating_10_point, 't': 0}
                                 if tag_name: item.addMood(tag_name)
                             if not is_inferred:
                                 item_was_updated = True
                                 tqdm.write(f"  {'[DRY RUN] ' if dry_run else ''}Type for '{item.title}': Manual -> Inferred")
-                        elif not should_be_inferred and is_inferred:
+                        elif not should_be_inferred and is_inferred: # User is marking it as manual
                             if not dry_run:
                                 del state[key]
                                 if tag_name: item.removeMood(tag_name)
@@ -433,7 +625,7 @@ def run_cleanup(music):
         try:
             try:
                 item = music.fetchItem(int(key_str))
-                current_rating = item.userRating or 0
+                current_rating = item.userRating or 0.0
                 if abs(current_rating - stored_rating) < 0.02:
                     if not config.get('DRY_RUN', True):
                         item.rate(None)
@@ -505,8 +697,8 @@ def run_verification(music):
         try:
             item = music.fetchItem(int(key_str))
             current_plex_rating = item.userRating or 0
-            if abs(current_plex_rating - stored_rating) > 0.01:
-                tqdm.write(f"  [OVERRIDE] {item.title}: Script expected {stored_rating/2:.2f}, found {current_plex_rating/2:.2f}")
+            if abs(current_plex_rating - stored_rating['r']) > 0.01:
+                tqdm.write(f"  [OVERRIDE] {item.title}: Script expected {stored_rating['r']/2:.2f}, found {current_plex_rating/2:.2f}")
                 overrides += 1
         except: discrepancies += 1
     print(f"\nDetected Overrides: {overrides} | Orphaned: {discrepancies}")
@@ -591,11 +783,11 @@ def process_layer(label, items, global_mean, start_char="", direction="UP"):
 
             key = str(item.ratingKey)
             plex_rating = item.userRating or 0.0
-            state_rating = state.get(key) # None if Case A/B, float if C/D/E
+            state_rating = state.get(key) # None if Case A/B, object if C/D/E
 
             # --- CASE C: MANUAL HIJACK DETECTION ---
-            # We thought we owned it, but the Plex value changed since our last write.
-            if state_rating is not None and abs(state_rating - plex_rating) > 0.01:
+            # We thought we owned it, but the Plex value changed since our last write
+            if state_rating is not None and abs(state_rating['r'] - plex_rating) > 0.01:
                 if not config.get('DRY_RUN', True):
                     del state[key]
                     if tag_name:
@@ -662,7 +854,7 @@ def process_layer(label, items, global_mean, start_char="", direction="UP"):
                 if state_rating is None or delta >= 0.01: # 0.01 is just a noise floor
                     if not config.get('DRY_RUN', True):
                         item.rate(inferred_rating)
-                        state[key] = inferred_rating
+                        state[key] = {'r': inferred_rating, 't': 0} # Mark as inferred, not a twin
                         if tag_name and tag_name not in [m.tag for m in item.moods]:
                             item.addMood(tag_name)
                     updated_count += 1
@@ -785,6 +977,10 @@ def run_processing_phases(music, choice, start_char):
         items = fetch_func()
         total_updated += process_layer(label, items, prior, current_start, direction)
 
+    # If full sequence, run twin logic
+    if choice == 0:
+        total_updated += process_twins(music, state, config)
+
     final_prior, _ = get_library_prior(music, silent=True)
     print("\n" + "="*45 + "\nRUN SUMMARY\n" + "="*45)
     print(f"Total Items Updated:  {total_updated}\nStart Global Prior:   {initial_prior/2:.2f} stars")
@@ -814,10 +1010,14 @@ def main():
         
         if 0 <= choice <= 4:
             run_processing_phases(music, choice, start_char="")
-        elif choice == 5: run_verification(music)
-        elif choice == 6: run_cleanup(music)
-        elif choice == 7: run_report(music)
-        elif choice == 8: run_reconstruction(music)
+        elif choice == 5:
+            process_twins(music, state, config)
+            save_state()
+        # Shifted old options for automation
+        elif choice == 6: run_verification(music)
+        elif choice == 7: run_cleanup(music)
+        elif choice == 8: run_report(music)
+        elif choice == 9: run_reconstruction(music)
         else:
             print(f"Invalid automation option: {choice}")
         return
@@ -832,6 +1032,7 @@ def main():
         print(" 2: Artist-Up  (Album Ratings -> Artists)")
         print(" 3: Album-Down (Artist Ratings -> Albums)")
         print(" 4: Track-Down (Album Ratings -> Tracks)")
+        print(" 5: Twin Logic (Unify Duplicate Tracks)")
         print(" ----------------------------------------")
         print(" A: Admin Tools")
         print(" B: Bulk Actions")
@@ -854,15 +1055,19 @@ def main():
         try:
             # Default to 0 (FULL SEQUENCE) if user just hits enter
             choice = int(choice_str or 0)
-            if not (0 <= choice <= 4):
-                print("Invalid choice. Please select from 0-4, A, B, or X.")
+            if not (0 <= choice <= 5):
+                print("Invalid choice. Please select from 0-5, A, B, or X.")
                 continue
         except ValueError:
-            print("Invalid choice. Please select from 0-4, A, B, or X.")
+            print("Invalid choice. Please select from 0-5, A, B, or X.")
             continue
         
-        start_char = input("Start Artist Letter (Empty for ALL): ") or ""
-        run_processing_phases(music, choice, start_char)
+        if 0 <= choice <= 4:
+            start_char = input("Start Artist Letter (Empty for ALL): ") or ""
+            run_processing_phases(music, choice, start_char)
+        elif choice == 5:
+            process_twins(music, state, config)
+            save_state()
 
 if __name__ == "__main__":
     main()
