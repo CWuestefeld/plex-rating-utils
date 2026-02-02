@@ -7,6 +7,7 @@ config.json
 *.xlsx
 *.sqlite
 *.log
+launch.json
 
 # Python environment and cache
 __pycache__/

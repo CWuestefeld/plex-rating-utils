@@ -8,6 +8,7 @@ import os
 import sys
 import math
 import time
+import csv
 from plexapi.server import PlexServer
 from tqdm import tqdm
 
@@ -44,7 +45,8 @@ def get_config():
                 "ALBUM_INHERITANCE_GRAVITY": 0.2,
                 "TRACK_INHERITANCE_GRAVITY": 0.3,  
                 "BULK_ARTIST_FILENAME": "./artist_ratings.csv",
-                "BULK_ALBUM_FILENAME": "./album_ratings.csv"
+                "BULK_ALBUM_FILENAME": "./album_ratings.csv",
+                "BULK_TRACK_FILENAME": "./track_ratings.csv"
             }
             try:
                 with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
@@ -204,6 +206,215 @@ def run_report(music):
     print("-" * 55)
     for a in rated_artists[-10:]:
         print(f"{a.title[:40]:<40} | {a.userRating/2:.2f} stars")
+
+def run_bulk_export(music, item_type):
+    """Exports Artist, Album, or Track data to a CSV file."""
+    if item_type == 'artist':
+        default_filename = config.get('BULK_ARTIST_FILENAME', './artist_ratings.csv')
+        headers = ['ratingKey', 'artistName', 'sortName', 'albumCount', 'genres', 'userRating', 'ratingType']
+        items = music.searchArtists()
+        print("\n--- Export Artist Ratings ---")
+    elif item_type == 'album':
+        default_filename = config.get('BULK_ALBUM_FILENAME', './album_ratings.csv')
+        headers = ['ratingKey', 'albumName', 'sortName', 'artistName', 'releaseYear', 'genres', 'userRating', 'ratingType']
+        items = music.searchAlbums()
+        print("\n--- Export Album Ratings ---")
+    elif item_type == 'track':
+        default_filename = config.get('BULK_TRACK_FILENAME', './track_ratings.csv')
+        headers = ['ratingKey', 'trackTitle', 'trackArtist', 'albumName', 'albumArtist', 'userRating', 'ratingType']
+        items = music.searchTracks()
+        print("\n--- Export Track Ratings ---")
+    else:
+        return
+
+    filename = input(f"Enter filename to export to [{default_filename}]: ").strip() or default_filename
+    
+    if os.path.exists(filename):
+        overwrite = input(f"File '{filename}' already exists. Overwrite? (y/n): ").strip().lower()
+        if overwrite != 'y':
+            print("Export cancelled.")
+            return
+
+    try:
+        with open(filename, 'w', newline='', encoding='utf-8') as f:
+            writer = csv.writer(f)
+            writer.writerow(headers)
+            
+            written_count = 0
+            pbar = tqdm(items, desc=f"Exporting {item_type}s", unit="item")
+            for item in pbar:
+                key = str(item.ratingKey)
+                rating_type = 'inferred' if key in state else 'manual'
+                user_rating = (item.userRating / 2.0) if item.userRating else ''
+                genres = ', '.join([g.tag for g in item.genres])
+
+                row = []
+                if item_type == 'artist':
+                    album_count = len(item.albums())
+                    row = [key, item.title, item.titleSort, album_count, genres, user_rating, rating_type]
+                elif item_type == 'album':
+                    row = [key, item.title, item.titleSort, item.parentTitle, item.year, genres, user_rating, rating_type]
+                elif item_type == 'track':
+                    track_artist = item.originalTitle if item.originalTitle else item.grandparentTitle
+                    row = [key, item.title, track_artist, item.parentTitle, item.grandparentTitle, user_rating, rating_type]
+                
+                writer.writerow(row)
+                written_count += 1
+        
+        print(f"\nSuccessfully wrote {written_count} records to '{filename}'.")
+
+    except Exception as e:
+        print(f"\nAn error occurred during export: {e}")
+
+def run_bulk_import(music, item_type):
+    """Imports Artist, Album, or Track ratings from a CSV file."""
+    if item_type == 'artist':
+        default_filename = config.get('BULK_ARTIST_FILENAME', './artist_ratings.csv')
+        expected_headers = ['ratingKey', 'userRating', 'ratingType']
+        print("\n--- Import Artist Ratings ---")
+    elif item_type == 'album':
+        default_filename = config.get('BULK_ALBUM_FILENAME', './album_ratings.csv')
+        expected_headers = ['ratingKey', 'userRating', 'ratingType', 'releaseYear']
+        print("\n--- Import Album Ratings ---")
+    elif item_type == 'track':
+        default_filename = config.get('BULK_TRACK_FILENAME', './track_ratings.csv')
+        expected_headers = ['ratingKey', 'userRating', 'ratingType']
+        print("\n--- Import Track Ratings ---")
+    else:
+        return
+
+    filename = input(f"Enter filename to import from [{default_filename}]: ").strip() or default_filename
+
+    if not os.path.exists(filename):
+        print(f"Error: File '{filename}' not found.")
+        return
+
+    dry_run = config.get('DRY_RUN', True)
+    tag_name = config.get('INFERRED_TAG', "").strip()
+    cooldown_batch = config.get('COOLDOWN_BATCH', 25)
+    cooldown_sleep = config.get('COOLDOWN_SLEEP', 5)
+    batch_counter = 0
+    
+    examined_count = 0
+    updated_count = 0
+
+    try:
+        with open(filename, 'r', newline='', encoding='utf-8-sig') as f:
+            reader = csv.DictReader(f)
+            
+            missing_headers = [h for h in expected_headers if h not in reader.fieldnames]
+            if missing_headers:
+                print(f"Error: CSV file is missing required columns: {', '.join(missing_headers)}")
+                return
+
+            rows = list(reader)
+            
+            # Optimization: Pre-fetch items if we have a significant number of rows
+            plex_lookup = {}
+            if len(rows) > 25:
+                print(f"Pre-fetching {item_type}s from Plex to optimize import...")
+                try:
+                    if item_type == 'artist':
+                        plex_lookup = {str(x.ratingKey): x for x in music.searchArtists()}
+                    elif item_type == 'album':
+                        plex_lookup = {str(x.ratingKey): x for x in music.searchAlbums()}
+                    elif item_type == 'track':
+                        plex_lookup = {str(x.ratingKey): x for x in music.searchTracks()}
+                except Exception as e:
+                    print(f"Warning: Pre-fetch failed ({e}). Falling back to individual fetches.")
+                    plex_lookup = {}
+
+            pbar = tqdm(rows, desc=f"Importing {item_type}s", unit="item")
+            for row in pbar:
+                try:
+                    examined_count += 1
+                    key = row.get('ratingKey')
+                    if not key:
+                        tqdm.write(f"Warning: Skipping row {examined_count + 1}, missing ratingKey.")
+                        continue
+
+                    try:
+                        if plex_lookup:
+                            item = plex_lookup.get(key)
+                            if not item:
+                                tqdm.write(f"Warning: Item with key {key} not found in library scan.")
+                                continue
+                        else:
+                            item = music.fetchItem(int(key))
+
+                        pbar.set_description(f"Importing {item_type}: {item.title[:20]:<20}")
+                        item_was_updated = False
+
+                        # 1. Process Rating Value
+                        new_rating_10_point = None
+                        new_rating_str = row.get('userRating', '').strip()
+                        if new_rating_str:
+                            new_rating_10_point = float(new_rating_str) * 2.0
+                            new_rating_10_point = max(0.0, min(10.0, new_rating_10_point))
+                        
+                        current_rating = item.userRating or 0.0
+                        rating_changed = (new_rating_10_point is None and current_rating != 0.0) or \
+                                         (new_rating_10_point is not None and abs(current_rating - new_rating_10_point) > 0.01)
+
+                        if rating_changed:
+                            if not dry_run: item.rate(new_rating_10_point)
+                            item_was_updated = True
+                            tqdm.write(f"  {'[DRY RUN] ' if dry_run else ''}Rating for '{item.title}': {current_rating/2:.2f} -> {(new_rating_10_point/2 if new_rating_10_point is not None else 'Unrated')}")
+
+                        # 2. Process Rating Type (manual/inferred)
+                        new_type = row.get('ratingType', 'manual').strip().lower()
+                        is_inferred = key in state
+                        should_be_inferred = (new_type == 'inferred' and new_rating_10_point is not None)
+
+                        if should_be_inferred and (not is_inferred or rating_changed):
+                            if not dry_run:
+                                state[key] = new_rating_10_point
+                                if tag_name: item.addMood(tag_name)
+                            if not is_inferred:
+                                item_was_updated = True
+                                tqdm.write(f"  {'[DRY RUN] ' if dry_run else ''}Type for '{item.title}': Manual -> Inferred")
+                        elif not should_be_inferred and is_inferred:
+                            if not dry_run:
+                                del state[key]
+                                if tag_name: item.removeMood(tag_name)
+                            item_was_updated = True
+                            tqdm.write(f"  {'[DRY RUN] ' if dry_run else ''}Type for '{item.title}': Inferred -> Manual")
+
+                        # 3. Process Album Year
+                        if item_type == 'album' and row.get('releaseYear', '').strip().isdigit():
+                            new_year = int(row['releaseYear'])
+                            if new_year != item.year:
+                                if not dry_run: item.edit(originallyAvailableAt=f"{new_year}-01-01")
+                                item_was_updated = True
+                                tqdm.write(f"  {'[DRY RUN] ' if dry_run else ''}Year for '{item.title}': {item.year} -> {new_year}")
+
+                        if item_was_updated:
+                            updated_count += 1
+                            batch_counter += 1
+
+                        if updated_count > 0 and updated_count % 100 == 0:
+                            if not dry_run: save_state()
+
+                        if batch_counter >= cooldown_batch:
+                            if not dry_run: save_state()
+                            pbar.set_description(f"Importing {item_type}: --pause {cooldown_sleep}s--")
+                            time.sleep(cooldown_sleep)
+                            batch_counter = 0
+
+                    except Exception as e:
+                        tqdm.write(f"Warning: Failed to process item with key {key} ('{row.get('trackTitle', row.get('albumName', row.get('artistName', 'N/A')))}'). Error: {e}")
+                except KeyboardInterrupt:
+                    if handle_pause(pbar) == 'q':
+                        pbar.close()
+                        if not dry_run: save_state()
+                        print("\n\n>>> Graceful Exit: Import interrupted by user.")
+                        sys.exit(0)
+                    batch_counter = 0 # Reset counter on resume
+
+        if not dry_run: save_state()
+        print(f"\nImport complete. Examined {examined_count} records, made {updated_count} updates.")
+    except Exception as e:
+        print(f"\nAn error occurred during import: {e}")
 
 def run_cleanup(music):
     """Option 6: Undoes script effects using Shadow DB and Tag safety sweep."""
@@ -433,9 +644,9 @@ def process_layer(label, items, global_mean, start_char="", direction="UP"):
                         # If parent's rating is inferred (in state), inherit directly.
                         # Otherwise, it's a manual rating, so apply gravity.
                         if parent_key in state:
-                            inferred_rating = (parent_rating * (1 - gravity)) + (global_mean * gravity)
-                        else:
                             inferred_rating = parent_rating
+                        else:
+                            inferred_rating = (parent_rating * (1 - gravity)) + (global_mean * gravity)
                 except: continue
 
             # --- CASE D/E: DRIFT VS UPDATE ---
@@ -512,7 +723,13 @@ def handle_bulk_actions_menu(music):
     """Displays and handles the Bulk Actions sub-menu."""
     while True:
         print("\n--- Bulk Actions ---")
-        print(" 1: Power Rankings")
+        print(" 1: Power Rankings Report")
+        print(" 2: Export Artist Ratings to CSV")
+        print(" 3: Export Album Ratings to CSV")
+        print(" 4: Export Track Ratings to CSV")
+        print(" 5: Import Artist Ratings from CSV")
+        print(" 6: Import Album Ratings from CSV")
+        print(" 7: Import Track Ratings from CSV")
         print(" --------------------")
         choice = input("Select Option or <Enter> to return: ").strip().lower()
 
@@ -520,6 +737,12 @@ def handle_bulk_actions_menu(music):
             return
         elif choice == '1':
             run_report(music)
+        elif choice == '2': run_bulk_export(music, 'artist')
+        elif choice == '3': run_bulk_export(music, 'album')
+        elif choice == '4': run_bulk_export(music, 'track')
+        elif choice == '5': run_bulk_import(music, 'artist')
+        elif choice == '6': run_bulk_import(music, 'album')
+        elif choice == '7': run_bulk_import(music, 'track')
         else:
             print("Invalid option.")
 
@@ -641,5 +864,7 @@ def main():
         start_char = input("Start Artist Letter (Empty for ALL): ") or ""
         run_processing_phases(music, choice, start_char)
 
+if __name__ == "__main__":
+    main()
 if __name__ == "__main__":
     main()
