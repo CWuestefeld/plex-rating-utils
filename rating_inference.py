@@ -56,6 +56,12 @@ def get_config():
                     "EXCLUDE_LIVE_ALBUMS": True,
                     "TWIN_TAG": "Twin",
                     "DEBUG_CLUSTERS": False
+                },
+                "UPWARD_EXCLUSION_RULES": {
+                    "ENABLED": True,
+                    "MIN_DURATION_SEC": 60,
+                    "KEYWORDS": ["intro", "outro", "interview", "skit", "applause", "commentary"],
+                    "CASE_SENSITIVE": False
                 }
             }
             try:
@@ -172,12 +178,44 @@ def calculate_dynamic_epsilon(item_count):
     if item_count < 1000: return 0.02
     return round(0.02 * (math.log10(item_count)-2), 3)
 
+def is_excluded_from_averages(track, exclusion_rules):
+    """Checks if a track should be excluded from upward aggregations based on duration or keywords."""
+    if not exclusion_rules.get("ENABLED", False):
+        return False
+
+    # Duration Check
+    min_duration_sec = exclusion_rules.get("MIN_DURATION_SEC", 60)
+    if track.duration and (track.duration // 1000) < min_duration_sec:
+        return True
+
+    # Keyword Check
+    keywords = exclusion_rules.get("KEYWORDS", [])
+    if not keywords or not track.title:
+        return False
+
+    title = track.title
+    case_sensitive = exclusion_rules.get("CASE_SENSITIVE", False)
+    if not case_sensitive:
+        title = title.lower()
+        keywords = [k.lower() for k in keywords]
+
+    if any(keyword in title for keyword in keywords):
+        return True
+
+    return False
+
 def get_library_prior(music, silent=False):
     """Calculates the Bayesian Prior using only Manual (User) ratings."""
     if not silent: print("Calculating Global Prior (Manual ratings only)...")
     all_rated = music.searchTracks(filters={'userRating>>': 0})
     manual_ratings = []
+    exclusion_rules = config.get('UPWARD_EXCLUSION_RULES', {})
+
     for t in all_rated:
+        # Gatekeeper: Exclude non-musical tracks from global average
+        if is_excluded_from_averages(t, exclusion_rules):
+            continue
+
         key = str(t.ratingKey)
         current_val = t.userRating or 0.0
         # A rating is manual if it's not in our state file, or if the value has been changed by the user
@@ -197,10 +235,19 @@ def _clean_title(title, album_title, twin_config):
         if any(p in title for p in "()[]") or any(p in album_title for p in "()[]"):
             return None
 
-    exclude_keywords = twin_config.get('EXCLUDE_KEYWORDS', [])
+    # Combine keywords from Twin Logic and Upward Exclusion for comprehensive filtering
+    twin_keywords = twin_config.get('EXCLUDE_KEYWORDS', [])
+    upward_config = config.get('UPWARD_EXCLUSION_RULES', {})
+    upward_keywords = []
+    if upward_config.get('ENABLED', False):
+        upward_keywords = upward_config.get('KEYWORDS', [])
+
+    # Use a set for efficient lookup, always lowercase for matching
+    all_exclude_keywords = set(k.lower() for k in twin_keywords + upward_keywords)
+
     # Check for whole word matches
     title_words = f" {title} "
-    if any(f" {word} " in title_words for word in exclude_keywords):
+    if any(f" {word} " in title_words for word in all_exclude_keywords):
         return None
 
     return title
@@ -381,6 +428,90 @@ def run_reconstruction(music):
     else:
         print(f"\nReconstruction finished. Items found: {restored_count}")
 
+def run_tag_sync(music):
+    """Synchronizes the Inferred tag based on the state file."""
+    print("\n--- Admin: Synchronize Inferred Tags ---")
+    tag_name = config.get('INFERRED_TAG', "").strip()
+    if not tag_name:
+        print("Error: No INFERRED_TAG defined in config.json. This feature is disabled.")
+        return
+
+    dry_run = config.get('DRY_RUN', True)
+    print(f"Mode: {'DRY RUN' if dry_run else 'LIVE'}")
+    print(f"This will scan all items and add/remove the '{tag_name}' tag to match the state file.")
+    confirm = input("This can be a very long process. Continue? (y/n): ").strip().lower()
+    if confirm != 'y':
+        print("Operation cancelled.")
+        return
+
+    cooldown_batch = config.get('COOLDOWN_BATCH', 25)
+    cooldown_sleep = config.get('COOLDOWN_SLEEP', 5)
+
+    search_types = ['artist', 'album', 'track']
+
+    for stype in search_types:
+        pbar_desc = f"Syncing {stype}s"
+        print(f"\n--- Phase: {pbar_desc} ---")
+
+        try:
+            # TODO: I think the music.search() below is wrong. We need different search calls depending on object type
+            # Single-Pass Retrieval: Fetch all items of the current type in one go.
+            tqdm.write(f"Fetching all {stype}s from Plex...")
+            all_items = music.search(libtype=stype)
+
+            tags_added = 0
+            tags_removed = 0
+            batch_counter = 0
+
+            pbar = tqdm(all_items, desc=pbar_desc, unit="item")
+            for item in pbar:
+                try:
+                    key = str(item.ratingKey)
+                    # Avoid Redundant Tag Queries: Check moods from the retrieved item.
+                    has_tag = tag_name in [m.tag for m in item.moods]
+                    is_in_state = key in state
+
+                    # Condition A: State says inferred, but tag is missing.
+                    if is_in_state and not has_tag:
+                        if not dry_run:
+                            item.addMood(tag_name)
+                        tags_added += 1
+                        batch_counter += 1
+                        tqdm.write(f"  {'[DRY RUN] ' if dry_run else ''}Adding tag to '{item.title}'")
+
+                    # Condition B: State says manual (or missing), but tag is present.
+                    elif not is_in_state and has_tag:
+                        if not dry_run:
+                            item.removeMood(tag_name)
+                        tags_removed += 1
+                        batch_counter += 1
+                        tqdm.write(f"  {'[DRY RUN] ' if dry_run else ''}Removing tag from '{item.title}'")
+
+                    # Performance & Safety: Cooldown pause logic.
+                    if batch_counter >= cooldown_batch:
+                        pbar.set_description(f"{pbar_desc} (pausing...)")
+                        time.sleep(cooldown_sleep)
+                        batch_counter = 0
+                        pbar.set_description(pbar_desc)
+
+                except KeyboardInterrupt:
+                    # Performance & Safety: Graceful stop.
+                    if handle_pause(pbar) == 'q':
+                        pbar.close()
+                        print("\n\n>>> Graceful Exit: Tag sync interrupted.")
+                        sys.exit(0)
+                    batch_counter = 0  # Reset counter on resume
+                except Exception as e:
+                    tqdm.write(f"Warning: Could not process item '{item.title}' ({item.ratingKey}). Error: {e}")
+
+            pbar.close()
+            print(f"Phase for {stype}s complete. Tags added: {tags_added}, Tags removed: {tags_removed}")
+
+        except Exception as e:
+            tqdm.write(f"Error during sync for {stype}s: {e}")
+
+    print("\nTag synchronization complete.")
+
 def run_report(music):
     """Option 7: Generates a Top/Bottom Artist report based on Bayesian ratings."""
     print("\n--- Option 7: Artist Power Rankings ---")
@@ -553,7 +684,7 @@ def run_bulk_import(music, item_type):
                                         )
 
                         # TODO! This is a hack to avoid updating ratings for now
-                        rating_changed = False
+                        # rating_changed = False
 
                         if rating_changed:
                             if not dry_run: item.rate(new_rating_10_point)
@@ -568,7 +699,7 @@ def run_bulk_import(music, item_type):
                         if should_be_inferred and (not is_inferred or rating_changed):
                             if not dry_run: # Mark as inferred, not a twin
                                 state[key] = {'r': new_rating_10_point, 't': 0}
-                                if tag_name: item.addMood(tag_name)
+                                # if tag_name: item.addMood(tag_name)
                             if not is_inferred:
                                 item_was_updated = True
                                 tqdm.write(f"  {'[DRY RUN] ' if dry_run else ''}Type for '{item.title}': Manual -> Inferred")
@@ -815,9 +946,20 @@ def process_layer(label, items, global_mean, start_char="", direction="UP"):
                 # 2. FILTER: Only use children NOT in our managed state (Manual ratings)
                 # This prevents the "feedback loop" where inferred ratings inform parents
                 manual_children = [c for c in children if (c.userRating or 0) > 0 and str(c.ratingKey) not in state]
-                sum_manual = sum(c.userRating for c in manual_children)
-                n_manual = len(manual_children)
                 
+                # Apply upward exclusion rules to filter out non-musical tracks
+                exclusion_rules = config.get('UPWARD_EXCLUSION_RULES', {})
+                if exclusion_rules.get("ENABLED", False):
+                    contributing_children = [c for c in manual_children if not is_excluded_from_averages(c, exclusion_rules)]
+                    # Fallback to all manual children if filtering removed everything, but only if there were manual children to begin with
+                    if not contributing_children and manual_children:
+                        contributing_children = manual_children
+                else:
+                    contributing_children = manual_children
+
+                sum_manual = sum(c.userRating for c in contributing_children)
+                n_manual = len(contributing_children)
+
                 # 3. Determine Informed Prior (p_i)
                 # Normalize and Bias the critic rating (clamped 0-10)
                 if (item.rating and item.rating > 0):
@@ -904,6 +1046,7 @@ def handle_admin_menu(music):
         print(" 1: Verify State")
         print(" 2: Cleanup/Undo")
         print(" 3: Reconstruct State")
+        print(" 4: Synchronize Plex Tags")
         print(" -------------------")
         choice = input("Select Option or <Enter> to return: ").strip().lower()
 
@@ -915,6 +1058,8 @@ def handle_admin_menu(music):
             run_cleanup(music)
         elif choice == '3':
             run_reconstruction(music)
+        elif choice == '4':
+            run_tag_sync(music)
         else:
             print("Invalid option.")
 
