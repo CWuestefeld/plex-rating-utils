@@ -28,3 +28,4 @@ Thumbs.db
 *.backup
 .geminicontext
 toys/
+backup/

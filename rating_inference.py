@@ -12,6 +12,7 @@ import csv
 import statistics
 from plexapi.server import PlexServer
 from tqdm import tqdm
+import reports
 
 # --- Config & State loading ---
 APP_VERSION = "1.4.0"
@@ -54,8 +55,7 @@ def get_config():
                     "EXCLUDE_KEYWORDS": ["live", "demo", "reprise", "instrumental", "commentary", "acoustic", "remix"],
                     "EXCLUDE_PARENTHESES": True,
                     "EXCLUDE_LIVE_ALBUMS": True,
-                    "TWIN_TAG": "Twin",
-                    "DEBUG_CLUSTERS": False
+                    "TWIN_TAG": "Twin"
                 },
                 "UPWARD_EXCLUSION_RULES": {
                     "ENABLED": True,
@@ -181,6 +181,10 @@ def calculate_dynamic_epsilon(item_count):
 def is_excluded_from_averages(track, exclusion_rules):
     """Checks if a track should be excluded from upward aggregations based on duration or keywords."""
     if not exclusion_rules.get("ENABLED", False):
+        return False
+
+    # Guard clause: If the item doesn't have a duration (e.g. it's an Album), we can't exclude it based on these rules.
+    if not hasattr(track, 'duration'):
         return False
 
     # Duration Check
@@ -359,7 +363,6 @@ def process_twins(music, state, config):
                 if abs(current_rating - final_rating) > epsilon:
                     updated_count += 1
                     batch_counter += 1
-                    tqdm.write(f"  {'[DRY RUN] ' if dry_run else ''}Twin Update for '{item.title}': {current_rating/2:.2f} -> {final_rating/2:.2f}")
                     
                     if not dry_run:
                         item.rate(final_rating)
@@ -373,9 +376,8 @@ def process_twins(music, state, config):
                 if not dry_run:
                     state[key] = {'r': final_rating, 't': new_twin_flag}
 
-            if twin_config.get('DEBUG_CLUSTERS', False):
-                tqdm.write(f"\n--- CLUSTER DEBUG ---\n  Tracks: {[t['item'].title for t in cluster]}")
-                tqdm.write(f"  Ratings: {[t['rating']/2 for t in cluster]}\n  Type: {'Manual Anchor' if manual_anchors else 'Inferred'}\n  Target: {target_rating/2:.2f}\n")
+            tqdm.write(f"\nTracks: {[t['item'].title for t in cluster]}")
+            tqdm.write(f"  Ratings: {[t['rating']/2 for t in cluster]}\n  Type: {'Manual Anchor' if manual_anchors else 'Inferred'}\n  Target: {target_rating/2:.2f}\n")
 
             if batch_counter >= cooldown_batch:
                 save_state()
@@ -511,25 +513,6 @@ def run_tag_sync(music):
             tqdm.write(f"Error during sync for {stype}s: {e}")
 
     print("\nTag synchronization complete.")
-
-def run_report(music):
-    """Option 7: Generates a Top/Bottom Artist report based on Bayesian ratings."""
-    print("\n--- Option 7: Artist Power Rankings ---")
-    artists = music.searchArtists()
-    rated_artists = [a for a in artists if a.userRating and a.userRating > 0]
-    rated_artists.sort(key=lambda x: x.userRating, reverse=True)
-    
-    print(f"\nTOP 10 ARTISTS (Highest Bayesian Score)")
-    print(f"{'Artist Name':<40} | {'Rating':<10}")
-    print("-" * 55)
-    for a in rated_artists[:10]:
-        print(f"{a.title[:40]:<40} | {a.userRating/2:.2f} stars")
-        
-    print(f"\nBOTTOM 10 ARTISTS (Lowest Bayesian Score)")
-    print(f"{'Artist Name':<40} | {'Rating':<10}")
-    print("-" * 55)
-    for a in rated_artists[-10:]:
-        print(f"{a.title[:40]:<40} | {a.userRating/2:.2f} stars")
 
 def run_bulk_export(music, item_type):
     """Exports Artist, Album, or Track data to a CSV file."""
@@ -1067,26 +1050,49 @@ def handle_bulk_actions_menu(music):
     """Displays and handles the Bulk Actions sub-menu."""
     while True:
         print("\n--- Bulk Actions ---")
-        print(" 1: Power Rankings Report")
-        print(" 2: Export Artist Ratings to CSV")
-        print(" 3: Export Album Ratings to CSV")
-        print(" 4: Export Track Ratings to CSV")
-        print(" 5: Import Artist Ratings from CSV")
-        print(" 6: Import Album Ratings from CSV")
-        print(" 7: Import Track Ratings from CSV")
+        print(" 1: Export Artist Ratings to CSV")
+        print(" 2: Export Album Ratings to CSV")
+        print(" 3: Export Track Ratings to CSV")
+        print(" 4: Import Artist Ratings from CSV")
+        print(" 5: Import Album Ratings from CSV")
+        print(" 6: Import Track Ratings from CSV")
         print(" --------------------")
         choice = input("Select Option or <Enter> to return: ").strip().lower()
 
         if choice == '':
             return
+        elif choice == '1': run_bulk_export(music, 'artist')
+        elif choice == '2': run_bulk_export(music, 'album')
+        elif choice == '3': run_bulk_export(music, 'track')
+        elif choice == '4': run_bulk_import(music, 'artist')
+        elif choice == '5': run_bulk_import(music, 'album')
+        elif choice == '6': run_bulk_import(music, 'track')
+        else:
+            print("Invalid option.")
+
+def handle_reports_menu(music):
+    """Displays and handles the Reports sub-menu."""
+    while True:
+        print("\n--- Reports & Analytics ---")
+        print(" 1: Library Coverage")
+        print(" 2: Rating Histogram")
+        print(" 3: Twins Inventory")
+        print(" 4: Dissenter Report (Outliers)")
+        print(" ---------------------------")
+        print("Note that these can take quite a while")
+        print("to run on very large libraries.")
+        choice = input("\nSelect Option or <Enter> to return: ").strip().lower()
+
+        if choice == '': return
         elif choice == '1':
-            run_report(music)
-        elif choice == '2': run_bulk_export(music, 'artist')
-        elif choice == '3': run_bulk_export(music, 'album')
-        elif choice == '4': run_bulk_export(music, 'track')
-        elif choice == '5': run_bulk_import(music, 'artist')
-        elif choice == '6': run_bulk_import(music, 'album')
-        elif choice == '7': run_bulk_import(music, 'track')
+            reports.show_library_coverage(music, state)
+        elif choice == '2':
+            reports.show_rating_histogram(music, state)
+        elif choice == '3':
+            clusters = build_twin_clusters(music, state, config.get('TWIN_LOGIC', {}))
+            reports.show_twins_inventory(clusters)
+        elif choice == '4':
+            reports.show_dissenter_report(music)
         else:
             print("Invalid option.")
 
@@ -1168,7 +1174,6 @@ def main():
         # Shifted old options for automation
         elif choice == 6: run_verification(music)
         elif choice == 7: run_cleanup(music)
-        elif choice == 8: run_report(music)
         elif choice == 9: run_reconstruction(music)
         else:
             print(f"Invalid automation option: {choice}")
@@ -1178,7 +1183,7 @@ def main():
     while True:
         print(f"\n======= Bayesian Music Rating Engine (v{APP_VERSION}) =======")
         print(   "-------  Copyright (c) 2026 Chris Wuestefeld  -------\n")
-        print(" 0: FULL SEQUENCE (Runs Options 1-4)")
+        print(" 0: FULL SEQUENCE (Runs Options 1-5)")
         print(" ----------------------------------------")
         print(" 1: Album-Up   (Track Ratings -> Albums)")
         print(" 2: Artist-Up  (Album Ratings -> Artists)")
@@ -1188,6 +1193,7 @@ def main():
         print(" ----------------------------------------")
         print(" A: Admin Tools")
         print(" B: Bulk Actions")
+        print(" R: Reports")
         print(" ----------------------------------------")
         print(" X: eXit")
         
@@ -1203,6 +1209,10 @@ def main():
         if choice_str == 'B':
             handle_bulk_actions_menu(music)
             continue # Go back to main menu
+
+        if choice_str == 'R':
+            handle_reports_menu(music)
+            continue
 
         try:
             # Default to 0 (FULL SEQUENCE) if user just hits enter
@@ -1221,7 +1231,5 @@ def main():
             process_twins(music, state, config)
             save_state()
 
-if __name__ == "__main__":
-    main()
 if __name__ == "__main__":
     main()
