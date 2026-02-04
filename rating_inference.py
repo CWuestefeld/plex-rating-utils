@@ -1072,12 +1072,14 @@ def handle_bulk_actions_menu(music):
 
 def handle_reports_menu(music):
     """Displays and handles the Reports sub-menu."""
+    cache = reports.LibraryCache(music)
     while True:
         print("\n--- Reports & Analytics ---")
         print(" 1: Library Coverage")
         print(" 2: Rating Histogram")
         print(" 3: Twins Inventory")
         print(" 4: Dissenter Report (Outliers)")
+        print(" 5: Clear Cache")
         print(" ---------------------------")
         print("Note that these can take quite a while")
         print("to run on very large libraries.")
@@ -1085,14 +1087,17 @@ def handle_reports_menu(music):
 
         if choice == '': return
         elif choice == '1':
-            reports.show_library_coverage(music, state)
+            reports.show_library_coverage(cache, state)
         elif choice == '2':
-            reports.show_rating_histogram(music, state)
+            reports.show_rating_histogram(cache, state)
         elif choice == '3':
-            clusters = build_twin_clusters(music, state, config.get('TWIN_LOGIC', {}))
+            clusters = build_twin_clusters(cache, state, config.get('TWIN_LOGIC', {}))
             reports.show_twins_inventory(clusters)
         elif choice == '4':
-            reports.show_dissenter_report(music)
+            reports.show_dissenter_report(cache)
+        elif choice == '5':
+            cache.clear()
+            print("Cache cleared.")
         else:
             print("Invalid option.")
 

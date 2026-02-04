@@ -9,7 +9,45 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 
 console = Console()
 
-def show_library_coverage(music, state):
+class LibraryCache:
+    def __init__(self, music):
+        self.music = music
+        self._tracks = None
+        self._albums = None
+        self._artists = None
+
+    def get_tracks(self):
+        if self._tracks is None:
+            self._tracks = self.music.searchTracks()
+        return self._tracks
+
+    def get_albums(self):
+        if self._albums is None:
+            self._albums = self.music.searchAlbums()
+        return self._albums
+
+    def get_artists(self):
+        if self._artists is None:
+            self._artists = self.music.searchArtists()
+        return self._artists
+
+    # I don't think that the "get_rated" really needs to be specialized.
+    # We should be able to assume after inferrence has run, that everything 
+    # is rated, or at least pretty darned close to it.
+    def get_rated_tracks(self):
+        #return [t for t in self.get_tracks() if t.userRating is not None and t.userRating > 0]
+        return self.get_tracks()
+
+    def get_rated_albums(self):
+        #return [a for a in self.get_albums() if a.userRating is not None and a.userRating > 0]
+        return self.get_albums()
+
+    def clear(self):
+        self._tracks = None
+        self._albums = None
+        self._artists = None
+
+def show_library_coverage(cache, state):
     """Report A: Library Coverage ('The Void')"""
     console.clear()
     console.rule("[bold blue]Report: Library Coverage")
@@ -23,11 +61,11 @@ def show_library_coverage(music, state):
         
         # Fetch counts
         progress.add_task("Scanning tracks (this is the big one)...", total=None)
-        total_tracks = len(music.searchTracks())
+        total_tracks = len(cache.get_tracks())
         progress.add_task("Scanning albums...", total=None)
-        total_albums = len(music.searchAlbums())
+        total_albums = len(cache.get_albums())
         progress.add_task("Scanning artists...", total=None)
-        total_artists = len(music.searchArtists())
+        total_artists = len(cache.get_artists())
 
         count_total = total_tracks + total_albums + total_artists
         count_inferred = 0
@@ -64,19 +102,20 @@ def show_library_coverage(music, state):
     console.print(f"\n[dim]Total Library Size: {count_total:,} items[/dim]\n")
     input("Press Enter to continue...")
 
-def show_rating_histogram(music, state):
+def show_rating_histogram(cache, state):
     """Report B: Rating Histogram"""
     console.clear()
     console.rule("[bold blue]Report B: Rating Histogram")
 
     with Progress(SpinnerColumn(), TextColumn("Analyzing rating distribution..."), transient=True) as progress:
         progress.add_task("scan")
-        rated_tracks = music.searchTracks(filters={'userRating>>': 0})
+        rated_tracks = cache.get_rated_tracks()
         
         manual_buckets = Counter()
         inferred_buckets = Counter()
         
         for track in rated_tracks:
+            if not track.userRating: continue
             key = str(track.ratingKey)
             rating = track.userRating or 0.0
             # Snap to nearest 0.5 (Plex uses 0-10 scale, so we divide by 2)
@@ -204,7 +243,7 @@ def show_twins_inventory(clusters):
     
     input("Press Enter to continue...")
 
-def show_dissenter_report(music):
+def show_dissenter_report(cache):
     """Report D: The Dissenter Report (Outliers)"""
     console.clear()
     console.rule("[bold blue]Report D: The Dissenter Report")
@@ -218,12 +257,12 @@ def show_dissenter_report(music):
     with Progress(SpinnerColumn(), TextColumn("{task.description}"), transient=True) as progress:
         # 1. Fetch all rated albums to build a lookup map
         progress.add_task("Fetching Album ratings...", total=None)
-        albums = music.searchAlbums(filters={'userRating>>': 0})
-        album_map = {str(a.ratingKey): a.userRating for a in albums}
+        albums = cache.get_rated_albums()
+        album_map = {str(a.ratingKey): a.userRating for a in albums if a.userRating}
         
         # 2. Fetch all rated tracks
         progress.add_task("Fetching Track ratings...", total=None)
-        tracks = music.searchTracks(filters={'userRating>>': 0})
+        tracks = cache.get_rated_tracks()
         
         dissenters = []
         
@@ -231,6 +270,7 @@ def show_dissenter_report(music):
         task = progress.add_task("Calculating deviations...", total=len(tracks))
         for track in tracks:
             progress.advance(task)
+            if not track.userRating: continue
             if not track.parentRatingKey: continue
             
             pkey = str(track.parentRatingKey)
