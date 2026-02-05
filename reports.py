@@ -31,17 +31,6 @@ class LibraryCache:
             self._artists = self.music.searchArtists()
         return self._artists
 
-    # I don't think that the "get_rated" really needs to be specialized.
-    # We should be able to assume after inferrence has run, that everything 
-    # is rated, or at least pretty darned close to it.
-    def get_rated_tracks(self):
-        #return [t for t in self.get_tracks() if t.userRating is not None and t.userRating > 0]
-        return self.get_tracks()
-
-    def get_rated_albums(self):
-        #return [a for a in self.get_albums() if a.userRating is not None and a.userRating > 0]
-        return self.get_albums()
-
     def clear(self):
         self._tracks = None
         self._albums = None
@@ -83,11 +72,11 @@ def show_library_coverage(cache, state):
     table.add_column("Metric", style="cyan")
     table.add_column("Count", justify="right")
     table.add_column("Percentage", justify="right")
-    table.add_column("Visual", width=20)
+    table.add_column("Visual", width=40)
 
     def add_row(label, value, total, color):
         pct = (value / total * 100) if total > 0 else 0
-        bar = Bar(total, 0, value, width=20, color=color)
+        bar = Bar(total, 0, value, width=40, color=color)
         table.add_row(label, f"{value:,}", f"{pct:.1f}%", bar)
 
     add_row("Total Items", count_total, count_total, "black")
@@ -109,7 +98,7 @@ def show_rating_histogram(cache, state):
 
     with Progress(SpinnerColumn(), TextColumn("Analyzing rating distribution..."), transient=True) as progress:
         progress.add_task("scan")
-        rated_tracks = cache.get_rated_tracks()
+        rated_tracks = cache.get_tracks()
         
         manual_buckets = Counter()
         inferred_buckets = Counter()
@@ -232,12 +221,12 @@ def show_twins_inventory(clusters):
     console.print(tree)
     
     # Offer export since this can be huge
-    if console.input("\nExport to text file? (y/n): ").lower() == 'y':
+    if console.input("\nExport to text file? (y/N): ").strip().lower() == 'y':
         filename = "report_twins.txt"
         with open(filename, "w", encoding="utf-8") as f:
             from rich.console import Console
             # Use a wide width to prevent wrapping in the text file
-            file_console = Console(file=f, width=200)
+            file_console = Console(file=f, width=console.width)
             file_console.print(tree)
         console.print(f"Exported to {filename}")
     
@@ -257,12 +246,12 @@ def show_dissenter_report(cache):
     with Progress(SpinnerColumn(), TextColumn("{task.description}"), transient=True) as progress:
         # 1. Fetch all rated albums to build a lookup map
         progress.add_task("Fetching Album ratings...", total=None)
-        albums = cache.get_rated_albums()
+        albums = cache.get_albums()
         album_map = {str(a.ratingKey): a.userRating for a in albums if a.userRating}
         
         # 2. Fetch all rated tracks
         progress.add_task("Fetching Track ratings...", total=None)
-        tracks = cache.get_rated_tracks()
+        tracks = cache.get_tracks()
         
         dissenters = []
         
@@ -296,9 +285,9 @@ def show_dissenter_report(cache):
     top_n = dissenters[:limit]
 
     table = Table(title=f"Top {limit} Dissenters (Tracks vs Album)", box=box.SIMPLE_HEAD)
-    table.add_column("Artist", style="cyan", width=30, no_wrap=True, overflow="ellipsis")
-    table.add_column("Track Title", style="white", width=40, no_wrap=True, overflow="ellipsis")
-    table.add_column("Album", style="blue", width=40, no_wrap=True, overflow="ellipsis")
+    table.add_column("Artist", style="cyan")
+    table.add_column("Track Title", style="white")
+    table.add_column("Album", style="blue")
     table.add_column("Track ★", justify="right", style="green")
     table.add_column("Album ★", justify="right", style="yellow")
     table.add_column("Deviation", justify="right", style="bold red")
@@ -316,7 +305,7 @@ def show_dissenter_report(cache):
 
     console.print(table)
 
-    if console.input("\nExport to text file? (y/n): ").lower() == 'y':
+    if console.input("\nExport to text file? (y/N): ").strip().lower() == 'y':
         filename = "report_dissenters.txt"
         with open(filename, "w", encoding="utf-8") as f:
             from rich.console import Console

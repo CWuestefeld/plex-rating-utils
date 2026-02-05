@@ -44,7 +44,7 @@ def get_config():
                 "DYNAMIC_PRECISION": True,
                 "COOLDOWN_BATCH": 25,
                 "COOLDOWN_SLEEP": 5,
-                "ALBUM_INHERITANCE_GRAVITY": 0.2,
+                "ALBUM_INHERITANCE_GRAVITY": 0.8,
                 "TRACK_INHERITANCE_GRAVITY": 0.3,  
                 "BULK_ARTIST_FILENAME": "./artist_ratings.csv",
                 "BULK_ALBUM_FILENAME": "./album_ratings.csv",
@@ -1079,7 +1079,7 @@ def handle_reports_menu(music):
         print(" 2: Rating Histogram")
         print(" 3: Twins Inventory")
         print(" 4: Dissenter Report (Outliers)")
-        print(" 5: Clear Cache")
+        print(" C: Clear Cache")
         print(" ---------------------------")
         print("Note that these can take quite a while")
         print("to run on very large libraries.")
@@ -1091,11 +1091,11 @@ def handle_reports_menu(music):
         elif choice == '2':
             reports.show_rating_histogram(cache, state)
         elif choice == '3':
-            clusters = build_twin_clusters(cache, state, config.get('TWIN_LOGIC', {}))
+            clusters = build_twin_clusters(music, state, config.get('TWIN_LOGIC', {}))
             reports.show_twins_inventory(clusters)
         elif choice == '4':
             reports.show_dissenter_report(cache)
-        elif choice == '5':
+        elif choice == 'c':
             cache.clear()
             print("Cache cleared.")
         else:
