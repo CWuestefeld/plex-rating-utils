@@ -376,7 +376,9 @@ def process_twins(music, state, config):
                 if not dry_run:
                     state[key] = {'r': final_rating, 't': new_twin_flag}
 
-            tqdm.write(f"\nTracks: {[t['item'].title for t in cluster]}")
+            track_title = cluster[0]['item'].title
+            album_names = ", ".join(sorted([t['item'].parentTitle or "Unknown Album" for t in cluster]))
+            tqdm.write(f"\nTrack: {track_title}\n  On Albums: {album_names}")
             tqdm.write(f"  Ratings: {[t['rating']/2 for t in cluster]}\n  Type: {'Manual Anchor' if manual_anchors else 'Inferred'}\n  Target: {target_rating/2:.2f}\n")
 
             if batch_counter >= cooldown_batch:
