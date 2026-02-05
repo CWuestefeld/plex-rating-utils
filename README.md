@@ -17,7 +17,6 @@ Standard Plex ratings are "flat". Rating a track doesn't influence the album, an
 1. **Bottom-Up Inference:** Calculating Album and Artist ratings based on a Bayesian average of their children, the entire library, and the ratings of critics.
 2. **Top-Down Inheritance:** Allowing unrated Tracks to inherit ratings from their parent Albums.
 3. **Twin Extrapolation:** When you've got the same Track in multiple albums, setting its rating in one place should apply everywhere.
-4. **Precision:** Utilizing high-precision floating-point ratings (e.g., 3.74 stars) to power more granular smart playlists and Auto-DJ features.
 
 While doing this, it tracks which ratings it has inferred so that your own ratings will always be the data driving the calculations, and avoids turning the rating process into a feedback loop.
 
@@ -48,6 +47,8 @@ And if Plex's metadata includes a rating from critics, then this data can be sim
 - **Tagging inferred data:**  Optionally add a `mood` tag to each track/album/artist so you can see which ratings are inferred.
 
 - **Reporting:** Get reports showing Library Coverage, Rating Histogram, Twins Inventory, and Dissenters/Outliers.
+
+- **Bulk edit/update**: Export data to a spreadsheet where you can do editing *en masse*, and upload in one go.
 * **Restartable:** Massive libraries are handled via a phased, checkpoint-based approach. If something happens forcing it to stop partway through, you can restart with minimal wasted work.
   
   # Setup
@@ -144,7 +145,7 @@ This will behave exactly as if you'd run it interactively, requesting "4" at the
 
 ![asdf](D:\Projects\plex-rating-utils\docs\execution.png)
 
-**[More detailed usage information here**](docs/usage-details.md)
+[**More detailed usage information here**](docs/usage-details.md)
 
 ## IMPORTANT!!
 
@@ -166,7 +167,7 @@ Running this needs to move a lot of data to perform its calculations. Plex's int
 
 [Description of **Reporting** features](docs/reports.md)
 
-Discussion of computations in the inference engine
+[Discussion of **computations** in the inference engine](docs/more-about-computation.md)
 
 # Copyright and licensing
 
