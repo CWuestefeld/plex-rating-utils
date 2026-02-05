@@ -31,11 +31,15 @@ And if Plex's metadata includes a rating from critics, then this data can be sim
 
 ## Key Features
 
-- **Restartable:** Massive libraries are handled via a phased, checkpoint-based approach. If something happens forcing it to stop partway through, you can restart with minimal wasted work.
-
 - **Bayesian Priors:** Uses a "Confidence Constant" to ensure that a single 5-star track (or 1-star, for that matter) doesn't unfairly dictate an entire album's score.
 
+- **Reversion to the mean**: Allows albums and artists to have scores "greater than the sum of their parts". The inference and inheritance of scores isn't just simple averaging.
+
+- **Extrapolate "twin" ratings**: where multiple instances of a given track (e.g., an original studio album and a greatest hits compilation), apply ratings across the instances.
+
 - **Critic Ratings:** Incorporate critic ratings (or don't) with a configurable weighting. Add/subtract a bias factor to better align critic ratings with the way you rate music.
+
+- **Filter noise**: Avoid using down-votes for "band intro" tracks and other such filler material when aggregating ratings.
 
 - **Non-Destructive:** Includes a full Cleanup/Undo mode to revert all script-applied ratings.
 
@@ -43,7 +47,8 @@ And if Plex's metadata includes a rating from critics, then this data can be sim
 
 - **Tagging inferred data:**  Optionally add a `mood` tag to each track/album/artist so you can see which ratings are inferred.
 
-- **Reporting:** Get reports showing you your library rating coverage, rating distribution, inventory of twin tracks, and outlier ratings, allowing you to better decide where you need to do ratings.
+- **Reporting:** Get reports showing Library Coverage, Rating Histogram, Twins Inventory, and Dissenters/Outliers.
+* **Restartable:** Massive libraries are handled via a phased, checkpoint-based approach. If something happens forcing it to stop partway through, you can restart with minimal wasted work.
   
   # Setup
 1. Clone this repository.
@@ -139,6 +144,8 @@ This will behave exactly as if you'd run it interactively, requesting "4" at the
 
 ![asdf](D:\Projects\plex-rating-utils\docs\execution.png)
 
+**[More detailed usage information here**](docs/usage-details.md)
+
 ## IMPORTANT!!
 
 * The program tracks its internal data by creating a file named plex_state.json. **DO NOT** delete this file!
@@ -151,7 +158,15 @@ OK, enough with trying to sell you on using this. Why might you *not* want to us
 
 Running this needs to move a lot of data to perform its calculations. Plex's internal database management is single-threaded, and its performance seems to get very noticeably worse for larger libraries. For really large libraries, a full initial run can take days if you use an `INFERRED_TAG`. Even a moderately-sized library might take a couple hours. 
 
-### 
+## More Information
+
+[Description of **Admin Menu** features](docs/admin-menu.md)
+
+[Description of **Bulk Action** features](docs/bulk-action-menu.md)
+
+[Description of **Reporting** features](docs/reports.md)
+
+Discussion of computations in the inference engine
 
 # Copyright and licensing
 
