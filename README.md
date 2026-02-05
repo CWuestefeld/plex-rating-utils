@@ -143,9 +143,9 @@ This will behave exactly as if you'd run it interactively, requesting "4" at the
 
 4. **Option 5 (Twins)**: The preceding stuff has propagated ratings across your whole library. Use this now to synchronize the ratings of tracks that appear in multiple different albums.
 
-![asdf](D:\Projects\plex-rating-utils\docs\execution.png)
+![image of program executing](./docs/execution.png)
 
-[**More detailed usage information here**](docs/usage-details.md)
+[**More detailed usage information here**](./docs/usage-details.md)
 
 ## IMPORTANT!!
 
