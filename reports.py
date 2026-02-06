@@ -1,13 +1,13 @@
-import math
-from collections import Counter, defaultdict
-from rich.console import Console
+import collections
+
+import rich.console
+from rich import box
+from rich.bar import Bar
+from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.table import Table
 from rich.tree import Tree
-from rich.bar import Bar
-from rich import box
-from rich.progress import Progress, SpinnerColumn, TextColumn
 
-console = Console()
+console = rich.console.Console()
 
 class LibraryCache:
     def __init__(self, music):
@@ -100,8 +100,8 @@ def show_rating_histogram(cache, state):
         progress.add_task("scan")
         rated_tracks = cache.get_tracks()
         
-        manual_buckets = Counter()
-        inferred_buckets = Counter()
+        manual_buckets = collections.Counter()
+        inferred_buckets = collections.Counter()
         
         for track in rated_tracks:
             if not track.userRating: continue

@@ -880,6 +880,8 @@ def process_layer(label, items, global_mean, start_char="", direction="UP"):
         items.sort(key=lambda x: (x.grandparentTitle.upper() if x.grandparentTitle else "", x.parentTitle.upper() if x.parentTitle else "", x.title.upper()))
 
     current_section = None
+    sort_name = "Unknown"
+    display_name = "Unknown"
     pbar = tqdm(items, desc=f"Phase: {label} ({direction})", unit="item")
     
     for item in pbar:

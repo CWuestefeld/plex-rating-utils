@@ -54,7 +54,7 @@ And if Plex's metadata includes a rating from critics, then this data can be sim
   # Setup
 1. Clone this repository.
 
-2. Install dependencies: `pip install plexapi tqdm`
+2. Install dependencies: `pip install -r requirements.txt`
 
 3. Create a `config.json` based on the provided template:
 
