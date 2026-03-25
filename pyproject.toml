@@ -1,0 +1,14 @@
+[project]
+name = "plex-rating-utils"
+version = "0.1.0"
+description = "Utilities for managing Plex ratings"
+dependencies = [
+    "PlexAPI==4.18.0",
+    "tqdm==4.67.3",
+    "rich==14.3.2",
+]
+
+[tool.pyre]
+# This is the 'Antigravity magic' that fixes the import errors
+source_directories = ["."]
+search_path = [".venv/Lib/site-packages"]

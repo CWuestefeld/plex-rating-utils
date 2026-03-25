@@ -60,12 +60,16 @@ def show_library_coverage(cache, state):
         count_inferred = 0
         count_twin = 0
 
-        count_inferred = len(state.keys())
-        count_manual = count_total - count_inferred
-        
         for entry in state.values():
-            if isinstance(entry, dict) and entry.get('t', 0) > 0:
-                count_twin += 1
+            if isinstance(entry, dict):
+                if not entry.get('m', False):
+                    count_inferred += 1
+                if entry.get('t', 0) > 0:
+                    count_twin += 1
+            else:
+                count_inferred += 1
+
+        count_manual = count_total - count_inferred
 
     # Render Table
     table = Table(box=box.SIMPLE_HEAD)
@@ -112,7 +116,11 @@ def show_rating_histogram(cache, state):
             stars = round((rating / 2.0) * 2) / 2.0  # Round to nearest 0.5
             
             if key in state:
-                inferred_buckets[stars] += 1
+                entry = state[key]
+                if isinstance(entry, dict) and entry.get('m', False):
+                    manual_buckets[stars] += 1
+                else:
+                    inferred_buckets[stars] += 1
             else:
                 manual_buckets[stars] += 1
 
