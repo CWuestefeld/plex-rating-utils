@@ -1,6 +1,6 @@
 [project]
 name = "plex-rating-utils"
-version = "0.1.0"
+version = "1.5.0"
 description = "Utilities for managing Plex ratings"
 dependencies = [
     "PlexAPI==4.18.0",

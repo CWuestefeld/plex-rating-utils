@@ -816,11 +816,16 @@ def run_bulk_import(music, item_type):
                                             (new_rating_10_point is not None and abs(current_rating - new_rating_10_point) > 0.01)
                                         )
 
-                        # TODO! This is a hack to avoid updating ratings for now
-                        # rating_changed = False
-
                         if rating_changed:
-                            if not dry_run: item.rate(new_rating_10_point)
+                            if not dry_run:
+                                item.rate(new_rating_10_point)
+                                # Update state file to reflect the new rating, preserving 't' and 'm' if they exist
+                                if key in state and isinstance(state[key], dict):
+                                    state[key]['r'] = new_rating_10_point
+                                else:
+                                    # If the key is new or not in the expected dict format, create a new entry
+                                    state[key] = {'r': new_rating_10_point, 't': 0, 'm': False}
+
                             item_was_updated = True
                             tqdm.write(f"  {'[DRY RUN] ' if dry_run else ''}Rating for '{item.title}': {current_rating/2:.2f} -> {(new_rating_10_point/2 if new_rating_10_point is not None else 'Unrated')}")
 
@@ -1116,19 +1121,17 @@ def process_layer(label, items, global_mean, start_char="", direction="UP"):
                 inferred_rating = ((c_val * p_i) + sum_manual) / (c_val + n_manual)
 
             elif direction == "DOWN":
-                try:
-                    parent = item.artist() if label == 'Album' else item.album()
-                    if parent and parent.userRating and parent.userRating > 0:
-                        parent_key = str(parent.ratingKey)
-                        parent_rating = parent.userRating
+                parent = item.artist() if label == 'Album' else item.album()
+                if parent and parent.userRating and parent.userRating > 0:
+                    parent_key = str(parent.ratingKey)
+                    parent_rating = parent.userRating
 
-                        # If parent's rating is inferred (in state), inherit directly.
-                        # Otherwise, it's a manual rating, so apply gravity.
-                        if not is_rating_manual(parent_key, parent_rating):
-                            inferred_rating = parent_rating
-                        else:
-                            inferred_rating = (parent_rating * (1 - gravity)) + (global_mean * gravity)
-                except: continue
+                    # If parent's rating is inferred (in state), inherit directly.
+                    # Otherwise, it's a manual rating, so apply gravity.
+                    if not is_rating_manual(parent_key, parent_rating):
+                        inferred_rating = parent_rating
+                    else:
+                        inferred_rating = (parent_rating * (1 - gravity)) + (global_mean * gravity)
 
             # --- CASE D/E: DRIFT VS UPDATE ---
             if inferred_rating:
