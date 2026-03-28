@@ -38,7 +38,7 @@ The `config.json` setting `"INFERRED_TAG": "Rating_Inferred"` tells the utility 
 
 OK, enough with trying to sell you on using this. Why might you *not* want to use it?
 
-Running this needs to move a lot of data to perform its calculations. Plex's internal database management is single-threaded, and its performance seems to get very noticeably worse for larger libraries. For really large libraries, a full initial run can take days if you use an `INFERRED_TAG`. Even a moderately-sized library might take a couple hours. Subsequent runs should be much faster, especially if you leave **dynamic precision** enabled so it won't need to update until the values drift farther apart. If you've got a really big library, it's probably worth it to forego that tagging.
+Running this needs to move a lot of data to perform its calculations. Plex's internal database management is single-threaded, and its performance seems to get very noticeably worse for larger libraries. For really large libraries, a full initial run can take days if you use an `INFERRED_TAG`. Even a moderately-sized library might take a couple hours. Subsequent runs should be much faster. If you've got a really big library, it's probably worth it to forego that tagging.
 
 If you decide later that you don't like what this did, and want to undo all the changes, you can use Option 6 for **Cleanup**. But note that it's going to be just as slow as the initial calculation run. That's because the real bottleneck here isn't the computation, but getting Plex to store all the changes. Whether we're setting a rating or deleting a rating isn't going to make a ton of difference in performance.
 

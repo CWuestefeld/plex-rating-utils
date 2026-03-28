@@ -49,7 +49,8 @@ And if Plex's metadata includes a rating from critics, then this data can be sim
 - **Reporting:** Get reports showing Library Coverage, Rating Histogram, Twins Inventory, and Dissenters/Outliers.
 
 - **Bulk edit/update**: Export data to a spreadsheet where you can do editing *en masse*, and upload in one go.
-* **Restartable:** Massive libraries are handled via a phased, checkpoint-based approach. If something happens forcing it to stop partway through, you can restart with minimal wasted work.
+ 
+- **Restartable:** Massive libraries are handled via a phased, checkpoint-based approach. If something happens forcing it to stop partway through, you can restart with minimal wasted work.
   
   # Setup
 1. Clone this repository.
@@ -70,12 +71,11 @@ And if Plex's metadata includes a rating from critics, then this data can be sim
   "WEIGHT_GLOBAL": 1.0,
   "DRY_RUN": false,
   "INFERRED_TAG": "Rating_Inferred",
-  "DYNAMIC_PRECISION": true,
   "COOLDOWN_BATCH": 50,
   "COOLDOWN_SLEEP": 5,
   "ALBUM_INHERITANCE_GRAVITY": 0.8,
   "TRACK_INHERITANCE_GRAVITY": 0.3,
-  "BULK_ARTIST_FILENAME": "./artist_ratings.csv",
+  "BULK_ARTIST_FILENAME": "./artist_ratings.csv",
   "BULK_ALBUM_FILENAME": "./album_ratings.csv",
   "BULK_TRACK_FILENAME": "./track_ratings.csv",
   "TWIN_LOGIC": {
