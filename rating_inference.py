@@ -14,6 +14,7 @@ from plexapi.server import PlexServer
 from plexapi.exceptions import NotFound
 from tqdm import tqdm
 import reports
+from logger import log_event
 
 # --- Config & State loading ---
 APP_VERSION = "1.5.1"
@@ -65,6 +66,10 @@ def get_config():
                     "MIN_DURATION_SEC": 60,
                     "KEYWORDS": ["intro", "outro", "interview", "skit", "applause", "commentary"],
                     "CASE_SENSITIVE": False
+                },
+                "LOGGING": {
+                    "LEVEL": "INFO",
+                    "FILE": "rating_inference.log"
                 }
             }
             try:
@@ -93,6 +98,7 @@ def get_config():
 config = get_config()
 state = {}
 active_library_uuid = None  # shared between load_state() and save_state()
+
 
 def load_state(library):
     """Loads the state file, validating version and UUID."""
@@ -264,7 +270,7 @@ def is_hijack(stored_rating, current_plex_rating):
         if stored_rating is None or current_plex_rating is None:
             return False
 
-        if abs(stored_rating - current_plex_rating) > 0.01:
+        if abs(stored_rating - current_plex_rating) >= 0.1:
             hijack_integer_only = config.get('HIJACK_INTEGER_ONLY', True)
             if hijack_integer_only and current_plex_rating % 1 != 0:
                 return False
@@ -297,6 +303,7 @@ def is_rating_manual(key_str, current_plex_rating, epsilon=0.01):
 def get_library_prior(music, silent=False):
     """Calculates the Bayesian Prior using only Manual (User) ratings."""
     if not silent: print("Calculating Global Prior (Manual ratings only)...")
+    log_event("CALC:Global-Prior:BEGIN", "Calculating Global Prior", "info")
     all_rated = music.searchTracks(filters={'userRating>>': 0})
     manual_ratings = []
     exclusion_rules = config.get('UPWARD_EXCLUSION_RULES', {})
@@ -320,6 +327,7 @@ def get_library_prior(music, silent=False):
             manual_ratings.append(current_val)
             
     prior = sum(manual_ratings) / len(manual_ratings) if manual_ratings else 6.0
+    log_event("CALC:Global-Prior:END", f"Prior: {prior/2:.3f}, Count: {len(manual_ratings)}", "info")
     return prior, len(manual_ratings)
 
 def _clean_title(title, album_title, twin_config):
@@ -358,6 +366,7 @@ def _clean_artist(track):
 def build_twin_clusters(music, state, twin_config):
     """Scans the library to find potential duplicate tracks ("twins") based on artist and title matching."""
     print("Building twin cluster registry...")
+    log_event("TWINS:Twin-Cluster:BEGIN", "Building twin cluster registry", "info")
     registry = {}
     all_rated_tracks = music.searchTracks(filters={'userRating>>': 0})
     
@@ -410,6 +419,7 @@ def build_twin_clusters(music, state, twin_config):
         if len(filtered_cluster) >= 2: final_clusters.append(filtered_cluster)
             
     print(f"Found {len(final_clusters)} potential twin clusters.")
+    log_event("TWINS:Twin-Cluster:END", f"Found {len(final_clusters)} potential twin clusters", "info")
     return final_clusters
 
 def process_twins(music, state, config):
@@ -420,6 +430,7 @@ def process_twins(music, state, config):
         return 0
 
     print("\n--- Phase 5: Twin Logic Processing ---")
+    log_event("TWINS:Twin-Logic:BEGIN", "Starting Phase 5: Twin Logic Processing", "info")
     clusters = build_twin_clusters(music, state, twin_config)
     if not clusters: return 0
 
@@ -484,9 +495,11 @@ def process_twins(music, state, config):
             batch_counter = 0
         except Exception as e:
             tqdm.write(f"Error processing a twin cluster: {e}")
+            log_event("TWINS:Twin-Logic:EXCEPTION", f"Error processing a twin cluster: {e}", "error")
 
     if not dry_run: save_state()
     print(f"Twin Logic complete. Updated {updated_count} tracks across {len(clusters)} clusters.")
+    log_event("TWINS:Twin-Logic:END", f"Pass: {updated_count} Updated across {len(clusters)} clusters", "info")
     return updated_count
 
 def run_reconstruction(music):
@@ -497,6 +510,7 @@ def run_reconstruction(music):
         return
 
     print(f"\n--- Option 8: State Reconstruction (Mode: {'DRY RUN' if config.get('DRY_RUN', True) else 'LIVE'}) ---")
+    log_event("ADMIN:Reconstruct:BEGIN", "Starting state reconstruction", "info")
     
     restored_count = 0
     # We must search each type explicitly
@@ -519,8 +533,10 @@ def run_reconstruction(music):
     if restored_count > 0 and not config.get('DRY_RUN', True):
         save_state()
         print(f"\nSuccess: Restored {restored_count} total items to plex_state.json.")
+        log_event("ADMIN:Reconstruct:END", f"Success: Restored {restored_count} total items", "info")
     else:
         print(f"\nReconstruction finished. Items found: {restored_count}")
+        log_event("ADMIN:Reconstruct:END", f"Finished. Items found: {restored_count}", "info")
 
 def run_emergency_recon(music):
     print("\n--- Option 4: Emergency Reconstruction ---")
@@ -528,6 +544,7 @@ def run_emergency_recon(music):
     print("It will update the local state file and Plex tags accordingly.")
 
     target_layer = input("Target layer (artist, album, track, all) [all]: ").strip().lower() or 'all'
+    log_event("ADMIN:EmergencyRecon:BEGIN", f"Starting emergency reconstruct on layer: {target_layer}", "info")
 
     layer_map = {
         'artist': [('Artists', 'artist')],
@@ -542,6 +559,7 @@ def run_emergency_recon(music):
 
     if target_layer not in layer_map:
         print(f"Invalid target: {target_layer}. Aborting.")
+        log_event("ADMIN:EmergencyRecon:ERROR", f"Invalid target layer: {target_layer}", "error")
         return
 
     inferred_tag = config.get('INFERRED_TAG', 'Rating_Inferred')
@@ -621,10 +639,12 @@ def run_emergency_recon(music):
     if not config.get('DRY_RUN', True):
         save_state()
     print(f"\nDone! State now contains {len(state)} items.")
+    log_event("ADMIN:EmergencyRecon:END", f"Finished. Total updates: {total_updates}", "info")
 
 def run_tag_sync(music):
     """Synchronizes the Inferred tag based on the state file."""
     print("\n--- Admin: Synchronize Inferred Tags ---")
+    log_event("ADMIN:TagSync:BEGIN", "Starting tag synchronization", "info")
     tag_name = config.get('INFERRED_TAG', "").strip()
     if not tag_name:
         print("Error: No INFERRED_TAG defined in config.json. This feature is disabled.")
@@ -712,9 +732,11 @@ def run_tag_sync(music):
             tqdm.write(f"Error during sync for {stype}s: {e}")
 
     print("\nTag synchronization complete.")
+    log_event("ADMIN:TagSync:END", "Finished tag synchronization", "info")
 
 def run_bulk_export(music, item_type):
     """Exports Artist, Album, or Track data to a CSV file."""
+    log_event(f"ADMIN:Export-{item_type.capitalize()}s:BEGIN", f"Starting bulk export of {item_type}s", "info")
     if item_type == 'artist':
         default_filename = config.get('BULK_ARTIST_FILENAME', './artist_ratings.csv')
         headers = ['ratingKey', 'artistName', 'sortName', 'albumCount', 'genres', 'userRating', 'ratingType']
@@ -769,12 +791,15 @@ def run_bulk_export(music, item_type):
                 written_count += 1
         
         print(f"\nSuccessfully wrote {written_count} records to '{filename}'.")
+        log_event(f"ADMIN:Export-{item_type.capitalize()}s:END", f"Successfully exported {written_count} records", "info")
 
     except Exception as e:
         print(f"\nAn error occurred during export: {e}")
+        log_event(f"ADMIN:Export-{item_type.capitalize()}s:EXCEPTION", f"Error during export: {e}", "error")
 
 def run_bulk_import(music, item_type):
     """Imports Artist, Album, or Track ratings from a CSV file."""
+    log_event(f"ADMIN:Import-{item_type.capitalize()}s:BEGIN", f"Starting bulk import of {item_type}s", "info")
     if item_type == 'artist':
         default_filename = config.get('BULK_ARTIST_FILENAME', './artist_ratings.csv')
         expected_headers = ['ratingKey', 'userRating', 'ratingType']
@@ -922,6 +947,8 @@ def run_bulk_import(music, item_type):
                             batch_counter = 0
 
                     except Exception as e:
+                        log_event(f"ADMIN:Import-{item_type.capitalize()}s:ERROR",
+                                  f"Warning: Failed to process item with key {key} ('{row.get('trackTitle', row.get('albumName', row.get('artistName', 'N/A')))}'). Error: {e}")
                         tqdm.write(f"Warning: Failed to process item with key {key} ('{row.get('trackTitle', row.get('albumName', row.get('artistName', 'N/A')))}'). Error: {e}")
                 except KeyboardInterrupt:
                     if handle_pause(pbar) == 'q':
@@ -933,12 +960,15 @@ def run_bulk_import(music, item_type):
 
         if not dry_run: save_state()
         print(f"\nImport complete. Examined {examined_count} records, made {updated_count} updates.")
+        log_event(f"ADMIN:Import-{item_type.capitalize()}s:END", f"Import complete. Examined: {examined_count}, Updated: {updated_count}", "info")
     except Exception as e:
         print(f"\nAn error occurred during import: {e}")
+        log_event(f"ADMIN:Import-{item_type.capitalize()}s:EXCEPTION", f"Error during import: {e}", "error")
 
 def run_cleanup(music):
     """Option 6: Undoes script effects using Shadow DB and Tag safety sweep."""
     print("\n--- Option 6: Cleanup / Undo Mode ---")
+    log_event("ADMIN:Cleanup:BEGIN", "Starting cleanup mode", "info")
     tag_name = config.get('INFERRED_TAG', "").strip()
     cooldown_batch = config.get('COOLDOWN_BATCH', 25)
     cooldown_sleep = config.get('COOLDOWN_SLEEP', 5)
@@ -1016,10 +1046,12 @@ def run_cleanup(music):
                 batch_counter = 0
 
     print("\nCleanup Complete.")
+    log_event("ADMIN:Cleanup:END", f"Finished cleanup. Keys removed: {keys_removed_count}", "info")
 
 def run_verification(music):
     """Option 5: Reports discrepancies between State and Plex."""
     print("\n--- Option 5: Verification Mode ---")
+    log_event("ADMIN:Verify:BEGIN", "Starting verification mode", "info")
     discrepancies, overrides = 0, 0
     pbar = tqdm(state.items(), desc="Verifying State", unit="item")
     for key_str, state_entry in pbar:
@@ -1032,6 +1064,7 @@ def run_verification(music):
                 overrides += 1
         except: discrepancies += 1
     print(f"\nDetected Overrides: {overrides} | Orphaned: {discrepancies}")
+    log_event("ADMIN:Verify:END", f"Overrides: {overrides} | Orphaned: {discrepancies}", "info")
 
 def process_layer(label, items, global_mean, start_char="", direction="UP"):
     """
@@ -1049,6 +1082,7 @@ def process_layer(label, items, global_mean, start_char="", direction="UP"):
         D. state rating is not None, plex rating is not None, abs(current - new_rating) <= 0.01, abs(current - inferred) < 0.1: this is an inferred value that has drifted slightly.
         E. state rating is not None, plex rating is not None, abs(current - new_rating) <= 0.01, abs(current - inferred) >= 0.1: this is an inferred value that has drifted significantly.
     """
+    log_event(f"CALC:{label}-{direction}:BEGIN", f"Starting phase: {label} {direction}", "info")
     updated_count, skipped_count, hijacked_count = 0, 0, 0
     batch_counter = 0
     start_char_floor = start_char.upper() if start_char else chr(0)
@@ -1117,6 +1151,12 @@ def process_layer(label, items, global_mean, start_char="", direction="UP"):
             if state_rating is not None:
                 stored_rating = state_rating.get('r') if isinstance(state_rating, dict) else state_rating
                 if is_hijack(stored_rating, plex_rating):
+                    if label == 'Track':
+                        log_event(f"CALC:{label}-{direction}:HIJACK", f"Track: {item.title} on Album: {item.parentTitle} by Artist: {item.grandparentTitle}; Rating stored: {stored_rating} plex: {plex_rating}", "info")
+                    elif label == 'Album':
+                        log_event(f"CALC:{label}-{direction}:HIJACK", f"Album: {item.title} by Artist: {item.parentTitle}; Rating stored: {stored_rating} plex: {plex_rating}", "info")
+                    else:
+                        log_event(f"CALC:{label}-{direction}:HIJACK", f"Item: {item.title}; Rating stored: {stored_rating} plex: {plex_rating}", "info")
                     if not config.get('DRY_RUN', True):
                         if key in state:
                             del state[key]
@@ -1234,10 +1274,12 @@ def process_layer(label, items, global_mean, start_char="", direction="UP"):
         except Exception as e:
             item_key = getattr(item, 'ratingKey', 'Unknown')
             tqdm.write(f"Warning: Unexpected error processing item {item_key}: {e}")
+            log_event(f"CALC:{label}-{direction}:EXCEPTION", f"Error on item {item_key}: {e}", "error")
             continue
 
     if not config.get('DRY_RUN', True): save_state()
     print(f"Pass: {updated_count} Updated, {skipped_count} Drift-Skipped, {hijacked_count} Hijacks Resolved.")
+    log_event(f"CALC:{label}-{direction}:END", f"Pass: {updated_count} Updated, {skipped_count} Drift-Skipped, {hijacked_count} Hijacks Resolved.", "info")
     return updated_count
 
 def handle_admin_menu(music):
