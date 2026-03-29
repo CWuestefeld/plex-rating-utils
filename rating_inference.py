@@ -374,49 +374,62 @@ def build_twin_clusters(music, state, twin_config):
 
     pbar = tqdm(all_rated_tracks, desc="Scanning for twins", unit="track")
     for track in pbar:
-        artist = _clean_artist(track)
-        if not artist: continue
-        
-        title = _clean_title(track.title, track.parentTitle, twin_config)
-        if not title: continue
+        try:
+            artist = _clean_artist(track)
+            if not artist: continue
+            
+            title = _clean_title(track.title, track.parentTitle, twin_config)
+            if not title: continue
 
-        twin_key = (artist, title)
-        key = str(track.ratingKey)
-        
-        track_data = {
-            'item': track,
-            'ratingKey': key,
-            'rating': track.userRating,
-            'is_manual': is_rating_manual(key, track.userRating or 0.0),
-            'duration': track.duration // 1000 if track.duration else 0
-        }
-        
-        if twin_key not in registry: registry[twin_key] = []
-        registry[twin_key].append(track_data)
+            twin_key = (artist, title)
+            key = str(track.ratingKey)
+            
+            track_data = {
+                'item': track,
+                'ratingKey': key,
+                'rating': track.userRating,
+                'is_manual': is_rating_manual(key, track.userRating or 0.0),
+                'duration': track.duration // 1000 if track.duration else 0
+            }
+            
+            if twin_key not in registry: registry[twin_key] = []
+            registry[twin_key].append(track_data)
+        except KeyboardInterrupt:
+            if handle_pause(pbar) == 'q':
+                pbar.close()
+                print("\n\n>>> Graceful Exit: Twin scanning interrupted.")
+                sys.exit(0)
 
     clusters = [v for v in registry.values() if len(v) >= 2]
     final_clusters = []
     tolerance = twin_config.get('DURATION_TOLERANCE_SEC', 5)
     
-    for cluster in tqdm(clusters, desc="Verifying clusters", unit="cluster"):
-        if not cluster or not all(t['duration'] > 0 for t in cluster): continue
-        
-        median_duration = statistics.median([t['duration'] for t in cluster])
-        filtered_cluster = [t for t in cluster if abs(t['duration'] - median_duration) <= tolerance]
-        
-        if exclude_live and len(filtered_cluster) >= 2:
-            non_live_cluster = []
-            for t in filtered_cluster:
-                try:
-                    # Check if the album is a Live album via subformats
-                    if 'Live' in t['item'].album().subformats:
-                        continue
-                except Exception:
-                    pass
-                non_live_cluster.append(t)
-            filtered_cluster = non_live_cluster
+    pbar_clusters = tqdm(clusters, desc="Verifying clusters", unit="cluster")
+    for cluster in pbar_clusters:
+        try:
+            if not cluster or not all(t['duration'] > 0 for t in cluster): continue
+            
+            median_duration = statistics.median([t['duration'] for t in cluster])
+            filtered_cluster = [t for t in cluster if abs(t['duration'] - median_duration) <= tolerance]
+            
+            if exclude_live and len(filtered_cluster) >= 2:
+                non_live_cluster = []
+                for t in filtered_cluster:
+                    try:
+                        # Check if the album is a Live album via subformats
+                        if 'Live' in t['item'].album().subformats:
+                            continue
+                    except Exception:
+                        pass
+                    non_live_cluster.append(t)
+                filtered_cluster = non_live_cluster
 
-        if len(filtered_cluster) >= 2: final_clusters.append(filtered_cluster)
+            if len(filtered_cluster) >= 2: final_clusters.append(filtered_cluster)
+        except KeyboardInterrupt:
+            if handle_pause(pbar_clusters) == 'q':
+                pbar_clusters.close()
+                print("\n\n>>> Graceful Exit: Twin verification interrupted.")
+                sys.exit(0)
             
     print(f"Found {len(final_clusters)} potential twin clusters.")
     log_event("TWINS:Twin-Cluster:END", f"Found {len(final_clusters)} potential twin clusters", "info")
@@ -479,8 +492,12 @@ def process_twins(music, state, config):
 
             track_title = cluster[0]['item'].title
             album_names = ", ".join(sorted([t['item'].parentTitle or "Unknown Album" for t in cluster]))
-            tqdm.write(f"\nTrack: {track_title}\n  On Albums: {album_names}")
-            tqdm.write(f"  Ratings: {[t['rating']/2 for t in cluster]}\n  Type: {'Manual Anchor' if manual_anchors else 'Inferred'}\n  Target: {target_rating/2:.2f}\n")
+            log_event("TWINS:Twin-Logic:CLUSTER",
+                      (f"Track: {track_title} ~ On Albums: {album_names} ~ "
+                       f"Ratings: {[t['rating']/2 for t in cluster]} ~ "
+                       f"Type: {'Manual Anchor' if manual_anchors else 'Inferred'} ~ "
+                       f"Target: {target_rating/2:.2f}"),
+                      "info")
 
             if batch_counter >= cooldown_batch:
                 save_state()
