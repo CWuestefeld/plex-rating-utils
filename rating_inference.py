@@ -207,29 +207,17 @@ def item_rate(item, rating):
     if config.get('DRY_RUN', True):
         return rating
 
-    roundrating = round(float(rating), 1)
+    # Round to the nearest integer for Plex
+    plex_rating = round(float(rating)) if rating is not None else None
 
-    item.rate(roundrating)
-    
-    # A small pause to allow Plex to process the change before we re-query.
-    # This helps prevent race conditions where we reload too quickly.
-    # time.sleep(config.get('COOLDOWN_SLEEP_SINGLE', 0.2))
+    item.rate(plex_rating)
     
     try:
-        # item.reload()
-
-        # newrating = item.userRating
-        newrating = roundrating
-
-        if abs(newrating - roundrating) > 0.01:
-            tqdm.write(
-                f"Warning: Large epsilon detected: '{abs(newrating - roundrating)}'")
-
-        # Return the actual value from the server.
-        return item.userRating
+        # Return the full-precision rating intended for our state
+        return rating
     except Exception as e:
-        tqdm.write(f"Warning: Failed to reload item '{getattr(item, 'title', 'Unknown')}' after rating. Verification failed. Error: {e}")
-        # Return the intended rating as a fallback if reload fails.
+        tqdm.write(f"Warning: Failed to save item '{getattr(item, 'title', 'Unknown')}' rating. Error: {e}")
+        # Return the intended rating as a fallback
         return rating
 
 def is_excluded_from_averages(track, exclusion_rules):
@@ -270,7 +258,9 @@ def is_hijack(stored_rating, current_plex_rating):
         if stored_rating is None or current_plex_rating is None:
             return False
 
-        if abs(stored_rating - current_plex_rating) >= 0.1:
+        rounded_stored_rating = round(float(stored_rating))
+
+        if abs(rounded_stored_rating - current_plex_rating) >= 0.1:
             hijack_integer_only = config.get('HIJACK_INTEGER_ONLY', True)
             if hijack_integer_only and current_plex_rating % 1 != 0:
                 return False
@@ -461,10 +451,10 @@ def process_twins(music, state, config):
             target_rating = 0.0
 
             if manual_anchors:
-                target_rating = round(statistics.mean(t['rating'] for t in manual_anchors),1)
+                target_rating = statistics.mean(t['rating'] for t in manual_anchors)
                 pbar.set_postfix_str("Manual Anchor")
             else:
-                target_rating = round(statistics.mean(t['rating'] for t in cluster),1)
+                target_rating = statistics.mean(t['rating'] for t in cluster)
                 pbar.set_postfix_str("Inferred Consensus")
 
             for track_data in cluster:
@@ -474,7 +464,7 @@ def process_twins(music, state, config):
                 
                 final_rating = current_rating if (manual_anchors and track_data['is_manual']) else target_rating
 
-                if current_rating != final_rating:
+                if current_rating != round(final_rating):
                     updated_count += 1
                     batch_counter += 1
                     
@@ -492,12 +482,12 @@ def process_twins(music, state, config):
 
             track_title = cluster[0]['item'].title
             album_names = ", ".join(sorted([t['item'].parentTitle or "Unknown Album" for t in cluster]))
-            log_event("TWINS:Twin-Logic:CLUSTER",
-                      (f"Track: {track_title} ~ On Albums: {album_names} ~ "
-                       f"Ratings: {[t['rating']/2 for t in cluster]} ~ "
-                       f"Type: {'Manual Anchor' if manual_anchors else 'Inferred'} ~ "
-                       f"Target: {target_rating/2:.2f}"),
-                      "info")
+            # log_event("TWINS:Twin-Logic:CLUSTER",
+            #           (f"Track: {track_title} ~ On Albums: {album_names} ~ "
+            #            f"Ratings: {[t['rating']/2 for t in cluster]} ~ "
+            #            f"Type: {'Manual Anchor' if manual_anchors else 'Inferred'} ~ "
+            #            f"Target: {target_rating/2:.2f}"),
+            #           "info")
 
             if batch_counter >= cooldown_batch:
                 save_state()
@@ -913,13 +903,15 @@ def run_bulk_import(music, item_type):
                                 verified_rating = item_rate(item, new_rating_10_point)
                                 # Update state file to reflect the new rating, preserving 't' and 'm' if they exist
                                 if key in state and isinstance(state[key], dict):
-                                    state[key]['r'] = verified_rating
+                                    state[key]['r'] = new_rating_10_point
                                 else:
                                     # If the key is new or not in the expected dict format, create a new entry
-                                    state[key] = {'r': verified_rating, 't': 0, 'm': False}
+                                    state[key] = {'r': new_rating_10_point, 't': 0, 'm': False}
 
                             item_was_updated = True
-                            tqdm.write(f"  {'[DRY RUN] ' if dry_run else ''}Rating for '{item.title}': {current_rating/2:.2f} -> {(new_rating_10_point/2 if new_rating_10_point is not None else 'Unrated')}")
+                            disp_state_rating = (new_rating_10_point/2 if new_rating_10_point is not None else 'Unrated')
+                            disp_plex_rating = (round(float(verified_rating))/2 if verified_rating is not None else 'Unrated')
+                            tqdm.write(f"  {'[DRY RUN] ' if dry_run else ''}Rating for '{item.title}': {current_rating/2:.2f} -> {disp_state_rating:.2f} ({disp_plex_rating})")
 
                         # 2. Process Rating Type (manual/inferred)
                         new_type = row.get('ratingType', 'manual').strip().lower()
@@ -1002,7 +994,7 @@ def run_cleanup(music):
                 stored_rating = state_entry.get('r') if isinstance(state_entry, dict) else state_entry
                 item = music.fetchItem(int(key_str))
                 current_rating = item.userRating or 0.0
-                if abs(current_rating - stored_rating) < 0.02:
+                if abs(current_rating - round(float(stored_rating))) < 0.02:
                     if not config.get('DRY_RUN', True):
                         item_rate(item, None)
                         if tag_name: item.removeMood(tag_name)
@@ -1076,8 +1068,8 @@ def run_verification(music):
             stored_rating = state_entry.get('r') if isinstance(state_entry, dict) else state_entry
             item = music.fetchItem(int(key_str))
             current_plex_rating = item.userRating or 0
-            if abs(current_plex_rating - stored_rating) > 0.01:
-                tqdm.write(f"  [OVERRIDE] {item.title}: Script expected {stored_rating/2:.2f}, found {current_plex_rating/2:.2f}")
+            if abs(current_plex_rating - round(float(stored_rating))) > 0.01:
+                tqdm.write(f"  [OVERRIDE] {item.title}: Script expected {round(float(stored_rating))/2:.2f}, found {current_plex_rating/2:.2f}")
                 overrides += 1
         except: discrepancies += 1
     print(f"\nDetected Overrides: {overrides} | Orphaned: {discrepancies}")
@@ -1233,24 +1225,44 @@ def process_layer(label, items, global_mean, start_char="", direction="UP"):
                     # If parent's rating is inferred (in state), inherit directly.
                     # Otherwise, it's a manual rating, so apply gravity.
                     if not is_rating_manual(parent_key, parent_rating):
-                        inferred_rating = parent_rating
+                        # Use full precision rating from state if available
+                        parent_state_entry = state.get(parent_key)
+                        if parent_state_entry:
+                             inferred_rating = parent_state_entry.get('r') if isinstance(parent_state_entry, dict) else parent_state_entry
+                        else:
+                             inferred_rating = parent_rating
                     else:
                         inferred_rating = (parent_rating * (1 - gravity)) + (global_mean * gravity)
 
-            # impose the same rounding that the Plex server is going to observe internally
-            inferred_rating = round(float(inferred_rating), 1)
+            # We DO NOT round the inferred rating here anymore to keep full precision
+            # inferred_rating = round(float(inferred_rating), 1)
 
             # --- CASE D/E: DRIFT VS UPDATE ---
             if inferred_rating:
-                delta = abs(plex_rating - inferred_rating)
+                # We expect the plex rating to be the rounded version of our inferred rating
+                target_plex_rating = round(float(inferred_rating))
+                delta = abs(plex_rating - target_plex_rating)
                 
                 # Case D: Drift (Close enough, skip the expensive network/DB write)
-                if state_rating is not None and delta < 0.05:
+                # We expect our internal state to vary from Plex, so we need to check if the
+                # *rounded* target plex rating is the same as the current plex rating.
+                # If delta is 0, then the plex rating is exactly what we would set it to.
+                # We also want to skip if the internal state already matches our new inferred rating.
+                
+                internal_delta = 0
+                if state_rating is not None:
+                     stored_rating = state_rating.get('r') if isinstance(state_rating, dict) else state_rating
+                     internal_delta = abs(float(stored_rating) - float(inferred_rating))
+
+                if state_rating is not None and delta == 0 and internal_delta < 0.05:
                     skipped_count += 1
                     continue
                 
                 # Case B/E: New or Significant Change
-                if state_rating is None or delta >= 0.05: # 0.05 is from Plex's precision of .1
+                # If the current plex rating does not match our intended rounded value,
+                # or if our internal high-precision calculation has drifted significantly (e.g. > 0.05),
+                # we need to update.
+                if state_rating is None or delta != 0 or internal_delta >= 0.05:
                     if not config.get('DRY_RUN', True):
                         verified_rating = item_rate(item, inferred_rating)
                         state[key] = {'r': verified_rating, 't': 0, 'm': False} # Mark as inferred, not a twin
