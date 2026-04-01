@@ -12,7 +12,7 @@ Select from the phases:
 
 - **Option 5:** Extrapolate ratings for twin Tracks to other copies of that same Track.
 
-- **(A) Admin Tools:** Verify synchronization with Plex, Cleanup/Undo, Reconstruct State, Synchronize Plex Tags.
+- **(A) Admin Tools:** Verify synchronization with Plex, Cleanup/Undo, Reconstruct State, and Synchronize Plex Tags.
 
 - **(B) Bulk Actions:** access the submenu to execute bulk actions (import/export).
 
@@ -40,7 +40,7 @@ OK, enough with trying to sell you on using this. Why might you *not* want to us
 
 Running this needs to move a lot of data to perform its calculations. Plex's internal database management is single-threaded, and its performance seems to get very noticeably worse for larger libraries. For really large libraries, a full initial run can take days if you use an `INFERRED_TAG`. Even a moderately-sized library might take a couple hours. Subsequent runs should be much faster. If you've got a really big library, it's probably worth it to forego that tagging.
 
-If you decide later that you don't like what this did, and want to undo all the changes, you can use Option 6 for **Cleanup**. But note that it's going to be just as slow as the initial calculation run. That's because the real bottleneck here isn't the computation, but getting Plex to store all the changes. Whether we're setting a rating or deleting a rating isn't going to make a ton of difference in performance.
+If you decide later that you don't like what this did, and want to undo all the changes, you can use the **Cleanup** option in the Admin menu. But note that it's going to be just as slow as the initial calculation run. That's because the real bottleneck here isn't the computation, but getting Plex to store all the changes. Whether we're setting a rating or deleting a rating isn't going to make a ton of difference in performance.
 
 
 
@@ -63,6 +63,6 @@ Here are some real-world performance measurements, taken for a 7,500 track libra
 
 But as library size increases, the scaling is *greater than* linear. That is, a library twice as big will take *more than* twice as long to process.
 
-If the performance is a real problem for you, you can improve it significantly by disabling the tagging of inferred values. Just go to your `config.json` file and change `"INFERRED_TAG": "Rating_Inferred"` to `"INFERRED_TAG": ""`. That eliminates much of the data that Plex has to write, significantly mitigating the bottleneck. In my testing, this saves about 40% of processing time. Just remember that by doing this, you're effectively disabling the **Option 8: Recovery** feature.
+If the performance is a real problem for you, you can improve it significantly by disabling the tagging of inferred values. Just go to your `config.json` file and change `"INFERRED_TAG": "Rating_Inferred"` to `"INFERRED_TAG": ""`. That eliminates much of the data that Plex has to write, significantly mitigating the bottleneck. In my testing, this saves about 40% of processing time.
 
 To avoid completely swamping your Plex server, we take a brief break occasionally. This is controlled by the `config.json` settings `COOLDOWN_BATCH` and `COOLDOWN_SLEEP`. The default settings are to break every 25 items, taking a 5 second pause. Feel free to adjust those as you'd like.

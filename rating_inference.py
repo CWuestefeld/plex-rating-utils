@@ -515,110 +515,6 @@ def run_reconstruction(music):
         print(f"\nReconstruction finished. Items found: {restored_count}")
         log_event("ADMIN:Reconstruct:END", f"Finished. Items found: {restored_count}", "info")
 
-def run_emergency_recon(music):
-    print("\n--- Option 4: Emergency Reconstruction ---")
-    print("This will guess whether items are manually rated or inferred based on heuristics.")
-    print("It will update the local state file and Plex tags accordingly.")
-
-    target_layer = input("Target layer (artist, album, track, all) [all]: ").strip().lower() or 'all'
-    log_event("ADMIN:EmergencyRecon:BEGIN", f"Starting emergency reconstruct on layer: {target_layer}", "info")
-
-    layer_map = {
-        'artist': [('Artists', 'artist')],
-        'album': [('Albums', 'album')],
-        'track': [('Tracks', 'track')],
-        'all': [
-            ('Artists', 'artist'),
-            ('Albums', 'album'),
-            ('Tracks', 'track')
-        ]
-    }
-
-    if target_layer not in layer_map:
-        print(f"Invalid target: {target_layer}. Aborting.")
-        log_event("ADMIN:EmergencyRecon:ERROR", f"Invalid target layer: {target_layer}", "error")
-        return
-
-    inferred_tag = config.get('INFERRED_TAG', 'Rating_Inferred')
-    epsilon = 0.01
-    checkpoint_interval = 100
-    items_processed_since_save = 0
-    total_updates = 0
-
-    def is_manual_rating_heuristic(rating):
-        if rating <= 0: return False
-        rounded = round(rating)
-        return abs(rating - rounded) < epsilon and (rounded % 2 == 0)
-
-    for label, libtype in layer_map[target_layer]:
-        print(f"\nQuerying rated {label} from Plex...")
-        items = music.search(libtype=libtype, userRating__gt=0, limit=None)
-        print(f"Found {len(items)} rated {label}.")
-
-        pbar = tqdm(items, desc=f"Processing {label}")
-        for item in pbar:
-            try:
-                rating = item.userRating or 0.0
-                key = str(item.ratingKey)
-                ts = item.lastRatedAt.isoformat() if item.lastRatedAt else ""
-
-                # Check against existing state
-                current_state_entry = state.get(key)
-                current_state_rating = None
-                if current_state_entry:
-                    if isinstance(current_state_entry, dict):
-                        current_state_rating = current_state_entry.get('r')
-                    else:
-                        current_state_rating = current_state_entry
-
-                # OPTIMIZATION: If we already have this key in our state file with the
-                # same rating, we can skip the expensive logic.
-                if current_state_rating is not None and abs(current_state_rating - rating) < epsilon:
-                    continue
-
-                manual_flag = is_manual_rating_heuristic(rating)
-
-                if manual_flag:
-                    # Case: Manual.
-                    # 1. Clean up local state so we don't track this as inferred anymore
-                    if key in state:
-                        del state[key]
-                        tqdm.write(f"Removed from local state: {item.title}")
-                        total_updates += 1
-
-                    if inferred_tag and any(m.tag == inferred_tag for m in item.moods):
-                        tqdm.write(f"Stripping tag: {item.title}")
-                        if not config.get('DRY_RUN', True):
-                            item.removeMood(inferred_tag)
-
-                else:
-                    # Case: Inferred. Update state.
-                    state[key] = {'r': rating, 't': 0, 'm': False, 'lr': ts}
-                    total_updates += 1
-
-                    if inferred_tag and not any(m.tag == inferred_tag for m in item.moods):
-                        tqdm.write(f"Claiming: {item.title} ({rating})")
-                        if not config.get('DRY_RUN', True):
-                            item.addMood(inferred_tag)
-
-                # CHECKPOINT LOGIC
-                items_processed_since_save += 1
-                if items_processed_since_save >= checkpoint_interval:
-                    if not config.get('DRY_RUN', True):
-                        save_state()
-                        tqdm.write(f"checkpoint saved")
-                    items_processed_since_save = 0
-                    pbar.set_description(f"Processing {label} (Saved)")
-
-            except Exception as e:
-                tqdm.write(f"Error on {item.title}: {e}")
-
-    # Final Save
-    if not config.get('DRY_RUN', True):
-        save_state()
-    print(f"\nDone! State now contains {len(state)} items.")
-    log_event("ADMIN:EmergencyRecon:END", f"Finished. Total updates: {total_updates}", "info")
-
 def run_tag_sync(music):
     """Synchronizes the Inferred tag based on the state file."""
     print("\n--- Admin: Synchronize Inferred Tags ---")
@@ -1279,8 +1175,7 @@ def handle_admin_menu(music):
         print(" 1: Verify State")
         print(" 2: Cleanup/Undo")
         print(" 3: Reconstruct State")
-        print(" 4: Emergency Reconstruct")
-        print(" 5: Synchronize Plex Tags")
+        print(" 4: Synchronize Plex Tags")
         print(" -------------------")
         choice = input("Select Option or <Enter> to return: ").strip().lower()
 
@@ -1293,8 +1188,6 @@ def handle_admin_menu(music):
         elif choice == '3':
             run_reconstruction(music)
         elif choice == '4':
-            run_emergency_recon(music)
-        elif choice == '5':
             run_tag_sync(music)
         else:
             print("Invalid option.")
