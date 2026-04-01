@@ -1225,6 +1225,7 @@ def handle_reports_menu(music):
         print(" 2: Rating Histogram")
         print(" 3: Twins Inventory")
         print(" 4: Dissenter Report (Outliers)")
+        print(" 5: Manual Rating History")
         print(" C: Clear Cache")
         print(" ---------------------------")
         print("Note that these can take quite a while")
@@ -1241,6 +1242,8 @@ def handle_reports_menu(music):
             reports.show_twins_inventory(clusters)
         elif choice == '4':
             reports.show_dissenter_report(cache)
+        elif choice == '5':
+            reports.show_manual_rating_history(cache, state)
         elif choice == 'c':
             cache.clear()
             print("Cache cleared.")

@@ -1,4 +1,6 @@
 import collections
+import datetime
+from datetime import date, timedelta
 
 import rich.console
 from rich import box
@@ -8,6 +10,7 @@ from rich.table import Table
 from rich.tree import Tree
 
 console = rich.console.Console()
+
 
 class LibraryCache:
     def __init__(self, music):
@@ -36,18 +39,19 @@ class LibraryCache:
         self._albums = None
         self._artists = None
 
+
 def show_library_coverage(cache, state):
     """Report A: Library Coverage ('The Void')"""
     console.clear()
     console.rule("[bold blue]Report: Library Coverage")
 
     with Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        transient=True
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            transient=True
     ) as progress:
         progress.add_task("Scanning library statistics...", total=None)
-        
+
         # Fetch counts
         progress.add_task("Scanning tracks (this is the big one)...", total=None)
         total_tracks = len(cache.get_tracks())
@@ -95,6 +99,7 @@ def show_library_coverage(cache, state):
     console.print(f"\n[dim]Total Library Size: {count_total:,} items[/dim]\n")
     input("Press Enter to continue...")
 
+
 def show_rating_histogram(cache, state):
     """Report B: Rating Histogram"""
     console.clear()
@@ -103,10 +108,10 @@ def show_rating_histogram(cache, state):
     with Progress(SpinnerColumn(), TextColumn("Analyzing rating distribution..."), transient=True) as progress:
         progress.add_task("scan")
         rated_tracks = cache.get_tracks()
-        
+
         manual_buckets = collections.Counter()
         inferred_buckets = collections.Counter()
-        
+
         for track in rated_tracks:
             if not track.userRating: continue
             key = str(track.ratingKey)
@@ -114,7 +119,7 @@ def show_rating_histogram(cache, state):
             # Snap to nearest 0.5 (Plex uses 0-10 scale, so we divide by 2)
             # Actually, let's keep 0-10 scale for internal math but display as stars (0-5)
             stars = round((rating / 2.0) * 2) / 2.0  # Round to nearest 0.5
-            
+
             if key in state:
                 entry = state[key]
                 if isinstance(entry, dict) and entry.get('m', False):
@@ -148,16 +153,16 @@ def show_rating_histogram(cache, state):
         m_count = manual_buckets.get(stars, 0)
         i_count = inferred_buckets.get(stars, 0)
         total = m_count + i_count
-        
+
         if total == 0: continue
 
         # Calculate bar segments
         total_width = int((total / max_count) * max_bar_width)
         if total_width == 0 and total > 0: total_width = 1
-        
+
         m_width = int((m_count / total) * total_width)
         i_width = total_width - m_width
-        
+
         # Correct for integer truncation issues, ensuring visibility of small segments.
         if total_width == 1 and m_count > 0 and i_count > 0:
             # For a single-char bar with mixed content, give it to the majority.
@@ -166,7 +171,7 @@ def show_rating_histogram(cache, state):
                 m_width = 0
             # In a tie, the original calculation (m_width=0, i_width=1) is preserved
             # unless we explicitly override, so we'll let manual win the tie.
-            else: # m_count >= i_count
+            else:  # m_count >= i_count
                 m_width = 1
                 i_width = 0
         elif m_count > 0 and m_width == 0:
@@ -176,13 +181,14 @@ def show_rating_histogram(cache, state):
             i_width = 1
             m_width = max(0, total_width - 1)
         bar_str = f"[green]{'█' * m_width}[/green][yellow]{'░' * i_width}[/yellow]"
-        
+
         pct = (total / total_items) * 100
         table.add_row(f"{stars:.1f}", bar_str, f"{total}", f"{pct:.1f}%")
 
     console.print(table)
     console.print("\n[green]█ Manual[/green]  [yellow]░ Inferred[/yellow]")
     input("\nPress Enter to continue...")
+
 
 def show_twins_inventory(clusters):
     """Report C: Twins Inventory"""
@@ -201,12 +207,12 @@ def show_twins_inventory(clusters):
 
     for cluster in clusters:
         if len(cluster) < 2: continue
-        
+
         # Representative info
         first = cluster[0]['item']
         artist = first.grandparentTitle or "Unknown"
         title = first.title
-        
+
         # Calculate cluster rating (average of manual anchors or all)
         manuals = [t for t in cluster if t['is_manual']]
         if manuals:
@@ -215,19 +221,19 @@ def show_twins_inventory(clusters):
         else:
             rating = sum(t['rating'] for t in cluster) / len(cluster)
             source = "Inferred Consensus"
-            
-        node = tree.add(f"[bold]{artist} - {title}[/bold] [yellow]({rating/2:.2f}★)[/yellow] [dim]({source})[/dim]")
-        
+
+        node = tree.add(f"[bold]{artist} - {title}[/bold] [yellow]({rating / 2:.2f}★)[/yellow] [dim]({source})[/dim]")
+
         for t in cluster:
             item = t['item']
             album = item.parentTitle or "Unknown"
             duration = f"{item.duration // 60000}:{(item.duration // 1000) % 60:02d}"
             rtype = "[green]Manual[/green]" if t['is_manual'] else "[dim]Inferred[/dim]"
-            
+
             node.add(f"{album} - {duration} {rtype}")
 
     console.print(tree)
-    
+
     # Offer export since this can be huge
     if console.input("\nExport to text file? (y/N): ").strip().lower() == 'y':
         filename = "report_twins.txt"
@@ -237,8 +243,9 @@ def show_twins_inventory(clusters):
             file_console = Console(file=f, width=console.width)
             file_console.print(tree)
         console.print(f"Exported to {filename}")
-    
+
     input("Press Enter to continue...")
+
 
 def show_dissenter_report(cache):
     """Report D: The Dissenter Report (Outliers)"""
@@ -256,26 +263,26 @@ def show_dissenter_report(cache):
         progress.add_task("Fetching Album ratings...", total=None)
         albums = cache.get_albums()
         album_map = {str(a.ratingKey): a.userRating for a in albums if a.userRating}
-        
+
         # 2. Fetch all rated tracks
         progress.add_task("Fetching Track ratings...", total=None)
         tracks = cache.get_tracks()
-        
+
         dissenters = []
-        
+
         # 3. Calculate deviations
         task = progress.add_task("Calculating deviations...", total=len(tracks))
         for track in tracks:
             progress.advance(task)
             if not track.userRating: continue
             if not track.parentRatingKey: continue
-            
+
             pkey = str(track.parentRatingKey)
             if pkey in album_map:
                 album_rating = album_map[pkey]
                 track_rating = track.userRating
-                delta = track_rating - album_rating # Signed delta to show direction
-                
+                delta = track_rating - album_rating  # Signed delta to show direction
+
                 # We care about magnitude of deviation
                 if abs(delta) > 0.1:
                     dissenters.append({
@@ -306,9 +313,9 @@ def show_dissenter_report(cache):
             d['artist'],
             d['title'],
             d['album'] or "",
-            f"{d['track_rating']/2:.1f}",
-            f"{d['album_rating']/2:.1f}",
-            f"{sign}{d['delta']/2:.1f}"
+            f"{d['track_rating'] / 2:.1f}",
+            f"{d['album_rating'] / 2:.1f}",
+            f"{sign}{d['delta'] / 2:.1f}"
         )
 
     console.print(table)
@@ -322,4 +329,185 @@ def show_dissenter_report(cache):
             file_console.print(table)
         console.print(f"Exported to {filename}")
 
+    input("\nPress Enter to continue...")
+
+
+def show_manual_rating_history(cache, state):
+    """Report E: Manual Rating History"""
+    console.clear()
+    console.rule("[bold blue]Report: Manual Rating History")
+
+    def parse_date_input(prompt, default_date=None):
+        while True:
+            date_str = console.input(prompt).strip()
+            if not date_str and default_date:
+                return default_date
+            if not date_str: # If no default and no input, return None
+                return None
+            try:
+                return datetime.datetime.strptime(date_str, "%Y-%m-%d").date()
+            except ValueError:
+                console.print("[red]Invalid date format. Please use YYYY-MM-DD.[/red]")
+
+    with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            transient=True
+    ) as progress:
+        progress.add_task("Finding date range of rating history...", total=None)
+        # First pass to find the absolute min_date for defaulting
+        all_event_dates = set()
+        def collect_all_dates(items):
+            for item in items:
+                if item.lastRatedAt:
+                    all_event_dates.add(item.lastRatedAt.date())
+
+        collect_all_dates(cache.get_artists())
+        collect_all_dates(cache.get_albums())
+        collect_all_dates(cache.get_tracks())
+
+    earliest_available_date = min(all_event_dates) if all_event_dates else date.min
+    
+    start_date = parse_date_input(
+        f"Enter start date (YYYY-MM-DD) [dim](default: {earliest_available_date.strftime('%Y-%m-%d')})[/dim]: ",
+        default_date=earliest_available_date
+    )
+    end_date = parse_date_input(
+        f"Enter end date (YYYY-MM-DD) [dim](default: {date.today().strftime('%Y-%m-%d')})[/dim]: ",
+        default_date=date.today()
+    )
+
+    if start_date and end_date and start_date > end_date:
+        console.print("[red]Start date cannot be after end date. Swapping them.[/red]")
+        start_date, end_date = end_date, start_date
+    
+    console.print(f"[dim]Showing data from {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}[/dim]\n")
+
+    with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            transient=True
+    ) as progress:
+        progress.add_task("Harvesting manual rating events...", total=None)
+
+        events = collections.defaultdict(lambda: collections.defaultdict(int))
+        # These min_date/max_date will now track the actual range of events *within* the user's filter
+        filtered_min_date, filtered_max_date = date.max, date.min
+
+        def process_items(items, item_type):
+            nonlocal filtered_min_date, filtered_max_date
+            for item in items:
+                if not item.lastRatedAt:
+                    continue
+
+                event_date = item.lastRatedAt.date()
+                # Filter by user-specified date range
+                if not (start_date <= event_date <= end_date):
+                    continue
+
+                key = str(item.ratingKey)
+                is_manual = False
+
+                if key not in state:
+                    is_manual = True
+                else:
+                    entry = state[key]
+                    if isinstance(entry, dict):
+                        if entry.get('m', False):
+                            is_manual = True
+                        elif 'lr' in entry and entry['lr']:  # Check if 'lr' exists and is not empty
+                            try:
+                                stored_timestamp = datetime.datetime.fromisoformat(entry['lr']).timestamp()
+                                if item.lastRatedAt.timestamp() > stored_timestamp:
+                                    is_manual = True
+                            except ValueError:
+                                # Handle cases where 'lr' might be malformed, treat as not hijacked
+                                pass
+
+                if is_manual:
+                    events[event_date][item_type] += 1
+                    if event_date < filtered_min_date:
+                        filtered_min_date = event_date
+                    if event_date > filtered_max_date:
+                        filtered_max_date = event_date
+
+        process_items(cache.get_artists(), 'artist')
+        process_items(cache.get_albums(), 'album')
+        process_items(cache.get_tracks(), 'track')
+
+    if not events:
+        console.print("No manual rating events found within the specified date range.")
+        input("Press Enter...")
+        return
+
+    # Adaptive Bucketing
+    # Use filtered_min_date and filtered_max_date for span calculation
+    span_days = (filtered_max_date - filtered_min_date).days if filtered_min_date != date.max else 0
+
+    if span_days < 45:
+        get_bucket_key = lambda d: d
+        format_bucket_key = lambda d: d.strftime("%Y-%m-%d")
+    elif 45 <= span_days <= 182:  # approx 6 months
+        get_bucket_key = lambda d: d - timedelta(days=d.weekday())
+        format_bucket_key = lambda d: f"{d.strftime('%Y-%m-%d')} (Week)"
+    else:
+        get_bucket_key = lambda d: d.replace(day=1)
+        format_bucket_key = lambda d: d.strftime("%Y-%m")
+
+    # Aggregate into buckets
+    buckets = collections.defaultdict(lambda: collections.defaultdict(int))
+    for event_date, counts in events.items():
+        bucket_key = get_bucket_key(event_date)
+        for item_type, count in counts.items():
+            buckets[bucket_key][item_type] += count
+
+    # Column-Relative Scaling
+    max_artists = max((b.get('artist', 0) for b in buckets.values()), default=1)
+    max_albums = max((b.get('album', 0) for b in buckets.values()), default=1)
+    max_tracks = max((b.get('track', 0) for b in buckets.values()), default=1)
+
+    # Visual Representation
+    table = Table(title="Manual Rating Activity Timeline", box=box.SIMPLE_HEAD)
+    table.add_column("Time Bucket", style="cyan", no_wrap=True)
+    table.add_column("Artists", justify="right")
+    table.add_column("Albums", justify="right")
+    table.add_column("Tracks", justify="right")
+
+    # Sort buckets by date descending and limit to a readable number
+    sorted_buckets = sorted(buckets.items(), key=lambda item: item[0], reverse=True)
+
+    for bucket_key, counts in sorted_buckets[:30]:  # Show approx 30 rows
+        artist_count = counts.get('artist', 0)
+        album_count = counts.get('album', 0)
+        track_count = counts.get('track', 0)
+
+        artist_bar = Bar(max_artists, 0, artist_count, color="blue")
+        album_bar = Bar(max_albums, 0, album_count, color="green")
+        track_bar = Bar(max_tracks, 0, track_count, color="red")
+
+        # Create a grid for each cell to hold the count and the bar
+        artist_cell = Table.grid(expand=True)
+        artist_cell.add_column(justify="right", no_wrap=True)
+        artist_cell.add_column()
+        artist_cell.add_row(f"{artist_count} ", artist_bar)
+
+        album_cell = Table.grid(expand=True)
+        album_cell.add_column(justify="right", no_wrap=True)
+        album_cell.add_column()
+        album_cell.add_row(f"{album_count} ", album_bar)
+
+        track_cell = Table.grid(expand=True)
+        track_cell.add_column(justify="right", no_wrap=True)
+        track_cell.add_column()
+        track_cell.add_row(f"{track_count} ", track_bar)
+
+        table.add_row(
+            format_bucket_key(bucket_key),
+            artist_cell,
+            album_cell,
+            track_cell
+        )
+
+    table.caption = "\nBars are scaled relative to each column's historical peak."
+    console.print(table)
     input("\nPress Enter to continue...")
