@@ -6,7 +6,6 @@
 import json
 import os
 import sys
-import math
 import time
 import csv
 import statistics
@@ -42,9 +41,7 @@ def get_config():
                 "WEIGHT_CRITIC": 3.0,
                 "WEIGHT_GLOBAL": 1.0,
                 "DRY_RUN": True,
-                "HIJACK_INTEGER_ONLY": True,
                 "INFERRED_TAG": "Rating_Inferred",
-                "DYNAMIC_PRECISION": True,
                 "COOLDOWN_BATCH": 25,
                 "COOLDOWN_SLEEP": 5,
                 "COOLDOWN_SLEEP_SINGLE": 0.2,
@@ -143,11 +140,11 @@ def load_state(library):
             print("Migrating state file format in memory...")
             migrated_ratings = {}
             for key, rating in tqdm(ratings_data.items(), desc="Migrating State"):
-                migrated_ratings[key] = {'r': rating, 't': 0, 'm': False}
+                migrated_ratings[key] = {'r': rating, 't': 0, 'm': False, 'lr': ""}
             state.update(migrated_ratings)
             return # We are done here
 
-    # Migrate 't': 2 to 'm': True, 't': 1
+    # Migrate 't': 2 to 'm': True, 't': 1 and add 'lr'
     for key, data in ratings_data.items():
         if isinstance(data, dict):
             if 'm' not in data:
@@ -156,9 +153,11 @@ def load_state(library):
                     data['t'] = 1
                 else:
                     data['m'] = False
+            if 'lr' not in data:
+                data['lr'] = ""
         else:
             # Handle potentially flat ratings from older format edge cases
-            ratings_data[key] = {'r': data, 't': 0, 'm': False}
+            ratings_data[key] = {'r': data, 't': 0, 'm': False, 'lr': ""}
 
     state.update(ratings_data)
 
@@ -190,35 +189,18 @@ def handle_pause(pbar):
             print("Resuming...")
             return 'r'
 
-def calculate_dynamic_epsilon(item_count):
-    """
-    Scales the 'Close Enough' threshold. 
-    Small libs: ~0.02 | 300k lib: ~0.15
-    Can be disabled by setting DYNAMIC_PRECISION to false in config.
-    """
-    if not config.get('DYNAMIC_PRECISION', True): return 0.02
-    if item_count < 1000: return 0.02
-    return round(0.02 * (math.log10(item_count)-2), 3)
-
 def item_rate(item, rating):
-    """Sets the rating for an item and verifies it by reloading."""
-    # In a dry run, we can't return a verified value from the server,
-    # so we just return what we would have set.
+    """Sets the rating for an item and returns the confirmed rating and timestamp."""
     if config.get('DRY_RUN', True):
-        return rating
+        return (rating, "")
 
-    # Round to the nearest integer for Plex
     plex_rating = round(float(rating)) if rating is not None else None
-
     item.rate(plex_rating)
+    item.reload()
     
-    try:
-        # Return the full-precision rating intended for our state
-        return rating
-    except Exception as e:
-        tqdm.write(f"Warning: Failed to save item '{getattr(item, 'title', 'Unknown')}' rating. Error: {e}")
-        # Return the intended rating as a fallback
-        return rating
+    actual_val = item.userRating or 0.0
+    ts = item.lastRatedAt.isoformat() if item.lastRatedAt else ""
+    return (actual_val, ts)
 
 def is_excluded_from_averages(track, exclusion_rules):
     """Checks if a track should be excluded from upward aggregations based on duration or keywords."""
@@ -250,26 +232,25 @@ def is_excluded_from_averages(track, exclusion_rules):
 
     return False
 
-def is_hijack(stored_rating, current_plex_rating):
+def is_hijack(stored_timestamp, current_timestamp):
     """
-    Checks if a rating change should be considered a manual hijack by the user.
+    Checks if a rating change should be considered a manual hijack by the user
+    by comparing the last rated timestamps.
     """
-    try:
-        if stored_rating is None or current_plex_rating is None:
-            return False
-
-        rounded_stored_rating = round(float(stored_rating))
-
-        if abs(rounded_stored_rating - current_plex_rating) >= 0.1:
-            hijack_integer_only = config.get('HIJACK_INTEGER_ONLY', True)
-            if hijack_integer_only and current_plex_rating % 1 != 0:
-                return False
-            return True
-        return False
-    except Exception:
+    # 1. If Plex has no rating event, it's impossible to be a hijack.
+    if not current_timestamp:
         return False
 
-def is_rating_manual(key_str, current_plex_rating, epsilon=0.01):
+    # 2. MIGRATION SAFETY: If we have a state record but no timestamp,
+    # we don't have enough data to prove a hijack. Return False
+    # so the script can "Claim" the item with a fresh timestamp.
+    if not stored_timestamp:
+        return False
+
+    # 3. MONITORING: Standard temporal check.
+    return current_timestamp > stored_timestamp
+
+def is_rating_manual(key_str, current_plex_rating, current_timestamp):
     """
     Determines if an item's rating should be considered manually set by the user.
     """
@@ -284,8 +265,8 @@ def is_rating_manual(key_str, current_plex_rating, epsilon=0.01):
         return True
         
     # Manual Hijack Detection (User changed an inferred rating)
-    stored_rating = state_entry.get('r') if isinstance(state_entry, dict) else state_entry
-    if is_hijack(stored_rating, current_plex_rating):
+    stored_timestamp = state_entry.get('lr', "") if isinstance(state_entry, dict) else ""
+    if is_hijack(stored_timestamp, current_timestamp):
         return True
         
     return False
@@ -305,15 +286,9 @@ def get_library_prior(music, silent=False):
 
         key = str(t.ratingKey)
         current_val = t.userRating or 0.0
+        curr_ts = t.lastRatedAt.isoformat() if t.lastRatedAt else ""
         
-        if is_rating_manual(key, current_val):
-            # BUG: This is a "get" function but it has a side effect of modifying the state.
-            # This premature "hijacking" of tracks (using a hardcoded 0.01 epsilon) can have
-            # downstream effects on album rating calculations and cause items to be
-            # incorrectly flagged as manual. The hijack detection should happen in process_layer.
-            #
-            # if key in state and not state[key].get('m', False):
-            #     del state[key]
+        if is_rating_manual(key, current_val, curr_ts):
             manual_ratings.append(current_val)
             
     prior = sum(manual_ratings) / len(manual_ratings) if manual_ratings else 6.0
@@ -374,11 +349,12 @@ def build_twin_clusters(music, state, twin_config):
             twin_key = (artist, title)
             key = str(track.ratingKey)
             
+            curr_ts = track.lastRatedAt.isoformat() if track.lastRatedAt else ""
             track_data = {
                 'item': track,
                 'ratingKey': key,
                 'rating': track.userRating,
-                'is_manual': is_rating_manual(key, track.userRating or 0.0),
+                'is_manual': is_rating_manual(key, track.userRating or 0.0, curr_ts),
                 'duration': track.duration // 1000 if track.duration else 0
             }
             
@@ -469,7 +445,7 @@ def process_twins(music, state, config):
                     batch_counter += 1
                     
                     if not dry_run:
-                        verified_rating = item_rate(item, final_rating)
+                        verified_rating, ts = item_rate(item, final_rating)
                         # Apply inferred tag if configured (only if it's not a manual anchor)
                         if not track_data['is_manual'] and inferred_tag_name and inferred_tag_name not in [m.tag for m in item.moods]:
                             item.addMood(inferred_tag_name)
@@ -477,17 +453,10 @@ def process_twins(music, state, config):
                         if twin_tag_name and twin_tag_name not in [m.tag for m in item.moods]:
                             item.addMood(twin_tag_name)
                         
-                        # BUGFIX: State must be updated ONLY when the plex rating is updated to prevent de-sync
-                        state[key] = {'r': verified_rating, 't': 1, 'm': track_data['is_manual']}
+                        state[key] = {'r': verified_rating, 't': 1, 'm': track_data['is_manual'], 'lr': ts}
 
             track_title = cluster[0]['item'].title
             album_names = ", ".join(sorted([t['item'].parentTitle or "Unknown Album" for t in cluster]))
-            # log_event("TWINS:Twin-Logic:CLUSTER",
-            #           (f"Track: {track_title} ~ On Albums: {album_names} ~ "
-            #            f"Ratings: {[t['rating']/2 for t in cluster]} ~ "
-            #            f"Type: {'Manual Anchor' if manual_anchors else 'Inferred'} ~ "
-            #            f"Target: {target_rating/2:.2f}"),
-            #           "info")
 
             if batch_counter >= cooldown_batch:
                 save_state()
@@ -534,7 +503,8 @@ def run_reconstruction(music):
                 if key not in state:
                     restored_count += 1
                     if not config.get('DRY_RUN', True): # Mark as inferred, not a twin
-                        state[key] = {'r': item.userRating, 't': 0, 'm': False}
+                        ts = item.lastRatedAt.isoformat() if item.lastRatedAt else ""
+                        state[key] = {'r': item.userRating, 't': 0, 'm': False, 'lr': ts}
                     pbar.set_postfix(restored=restored_count)
 
     if restored_count > 0 and not config.get('DRY_RUN', True):
@@ -590,6 +560,7 @@ def run_emergency_recon(music):
             try:
                 rating = item.userRating or 0.0
                 key = str(item.ratingKey)
+                ts = item.lastRatedAt.isoformat() if item.lastRatedAt else ""
 
                 # Check against existing state
                 current_state_entry = state.get(key)
@@ -622,7 +593,7 @@ def run_emergency_recon(music):
 
                 else:
                     # Case: Inferred. Update state.
-                    state[key] = {'r': rating, 't': 0, 'm': False}
+                    state[key] = {'r': rating, 't': 0, 'm': False, 'lr': ts}
                     total_updates += 1
 
                     if inferred_tag and not any(m.tag == inferred_tag for m in item.moods):
@@ -779,7 +750,8 @@ def run_bulk_export(music, item_type):
             pbar = tqdm(items, desc=f"Exporting {item_type}s", unit="item")
             for item in pbar:
                 key = str(item.ratingKey)
-                is_manual = is_rating_manual(key, item.userRating or 0.0)
+                ts = item.lastRatedAt.isoformat() if item.lastRatedAt else ""
+                is_manual = is_rating_manual(key, item.userRating or 0.0, ts)
                 rating_type = 'manual' if is_manual else 'inferred'
                 user_rating = (item.userRating / 2.0) if item.userRating else ''
                 genres = ', '.join([g.tag for g in item.genres])
@@ -900,13 +872,14 @@ def run_bulk_import(music, item_type):
 
                         if rating_changed:
                             if not dry_run:
-                                verified_rating = item_rate(item, new_rating_10_point)
+                                verified_rating, ts = item_rate(item, new_rating_10_point)
                                 # Update state file to reflect the new rating, preserving 't' and 'm' if they exist
                                 if key in state and isinstance(state[key], dict):
                                     state[key]['r'] = new_rating_10_point
+                                    state[key]['lr'] = ts
                                 else:
                                     # If the key is new or not in the expected dict format, create a new entry
-                                    state[key] = {'r': new_rating_10_point, 't': 0, 'm': False}
+                                    state[key] = {'r': new_rating_10_point, 't': 0, 'm': False, 'lr': ts}
 
                             item_was_updated = True
                             disp_state_rating = (new_rating_10_point/2 if new_rating_10_point is not None else 'Unrated')
@@ -915,13 +888,13 @@ def run_bulk_import(music, item_type):
 
                         # 2. Process Rating Type (manual/inferred)
                         new_type = row.get('ratingType', 'manual').strip().lower()
-                        
-                        is_manual_currently = is_rating_manual(key, current_rating)
+                        ts = item.lastRatedAt.isoformat() if item.lastRatedAt else ""
+                        is_manual_currently = is_rating_manual(key, current_rating, ts)
                         should_be_inferred = (new_type == 'inferred' and new_rating_10_point is not None)
 
                         if should_be_inferred and (is_manual_currently or rating_changed):
                             if not dry_run: # Mark as inferred, not a twin
-                                state[key] = {'r': new_rating_10_point, 't': 0, 'm': False}
+                                state[key] = {'r': new_rating_10_point, 't': 0, 'm': False, 'lr': ts}
                                 # if tag_name: item.addMood(tag_name)
                             if is_manual_currently:
                                 item_was_updated = True
@@ -994,7 +967,7 @@ def run_cleanup(music):
                 stored_rating = state_entry.get('r') if isinstance(state_entry, dict) else state_entry
                 item = music.fetchItem(int(key_str))
                 current_rating = item.userRating or 0.0
-                if abs(current_rating - round(float(stored_rating))) < 0.02:
+                if stored_rating is not None and abs(current_rating - round(float(stored_rating))) < 0.02:
                     if not config.get('DRY_RUN', True):
                         item_rate(item, None)
                         if tag_name: item.removeMood(tag_name)
@@ -1068,9 +1041,12 @@ def run_verification(music):
             stored_rating = state_entry.get('r') if isinstance(state_entry, dict) else state_entry
             item = music.fetchItem(int(key_str))
             current_plex_rating = item.userRating or 0
-            if abs(current_plex_rating - round(float(stored_rating))) > 0.01:
-                tqdm.write(f"  [OVERRIDE] {item.title}: Script expected {round(float(stored_rating))/2:.2f}, found {current_plex_rating/2:.2f}")
-                overrides += 1
+            if stored_rating is not None:
+                if abs(current_plex_rating - round(float(stored_rating))) > 0.01:
+                    tqdm.write(f"  [OVERRIDE] {item.title}: Script expected {round(float(stored_rating))/2:.2f}, found {current_plex_rating/2:.2f}")
+                    overrides += 1
+            else:
+                discrepancies += 1
         except: discrepancies += 1
     print(f"\nDetected Overrides: {overrides} | Orphaned: {discrepancies}")
     log_event("ADMIN:Verify:END", f"Overrides: {overrides} | Orphaned: {discrepancies}", "info")
@@ -1153,19 +1129,19 @@ def process_layer(label, items, global_mean, start_char="", direction="UP"):
 
             key = str(item.ratingKey)
             plex_rating = item.userRating or 0.0
+            curr_ts = item.lastRatedAt.isoformat() if item.lastRatedAt else ""
             state_rating = state.get(key) # None if Case A/B, object if C/D/E
 
             # --- CASE C: MANUAL HIJACK DETECTION ---
-            # We thought we owned it, but the Plex value changed since our last write
             if state_rating is not None:
-                stored_rating = state_rating.get('r') if isinstance(state_rating, dict) else state_rating
-                if is_hijack(stored_rating, plex_rating):
+                stored_ts = state_rating.get('lr', "")
+                if is_hijack(stored_ts, curr_ts):
                     if label == 'Track':
-                        log_event(f"CALC:{label}-{direction}:HIJACK", f"Track: {item.title} on Album: {item.parentTitle} by Artist: {item.grandparentTitle}; Rating stored: {stored_rating} plex: {plex_rating}", "info")
+                        log_event(f"CALC:{label}-{direction}:HIJACK", f"Track: {item.title} on Album: {item.parentTitle} by Artist: {item.grandparentTitle}; Stored TS: {stored_ts} Plex TS: {curr_ts}", "info")
                     elif label == 'Album':
-                        log_event(f"CALC:{label}-{direction}:HIJACK", f"Album: {item.title} by Artist: {item.parentTitle}; Rating stored: {stored_rating} plex: {plex_rating}", "info")
+                        log_event(f"CALC:{label}-{direction}:HIJACK", f"Album: {item.title} by Artist: {item.parentTitle}; Stored TS: {stored_ts} Plex TS: {curr_ts}", "info")
                     else:
-                        log_event(f"CALC:{label}-{direction}:HIJACK", f"Item: {item.title}; Rating stored: {stored_rating} plex: {plex_rating}", "info")
+                        log_event(f"CALC:{label}-{direction}:HIJACK", f"Item: {item.title}; Stored TS: {stored_ts} Plex TS: {curr_ts}", "info")
                     if not config.get('DRY_RUN', True):
                         if key in state:
                             del state[key]
@@ -1185,14 +1161,17 @@ def process_layer(label, items, global_mean, start_char="", direction="UP"):
                 children = item.tracks() if label == 'Album' else item.albums()
                 
                 # 2. FILTER: Only use children NOT in our managed state (Manual ratings)
-                # This prevents the "feedback loop" where inferred ratings inform parents
-                manual_children = [c for c in children if (c.userRating or 0) > 0 and is_rating_manual(str(c.ratingKey), c.userRating)]
-                
+                manual_children = []
+                for c in children:
+                    if (c.userRating or 0) > 0:
+                        child_ts = c.lastRatedAt.isoformat() if c.lastRatedAt else ""
+                        if is_rating_manual(str(c.ratingKey), c.userRating, child_ts):
+                            manual_children.append(c)
+
                 # Apply upward exclusion rules to filter out non-musical tracks
                 exclusion_rules = config.get('UPWARD_EXCLUSION_RULES', {})
                 if exclusion_rules.get("ENABLED", False):
                     contributing_children = [c for c in manual_children if not is_excluded_from_averages(c, exclusion_rules)]
-                    # Fallback to all manual children if filtering removed everything, but only if there were manual children to begin with
                     if not contributing_children and manual_children:
                         contributing_children = manual_children
                 else:
@@ -1202,7 +1181,6 @@ def process_layer(label, items, global_mean, start_char="", direction="UP"):
                 n_manual = len(contributing_children)
 
                 # 3. Determine Informed Prior (p_i)
-                # Normalize and Bias the critic rating (clamped 0-10)
                 if (item.rating and item.rating > 0):
                     c_rating = min( 0, ( (item.rating + b_critic) / (10 + b_critic) ) * 10 )
                 else:
@@ -1221,11 +1199,9 @@ def process_layer(label, items, global_mean, start_char="", direction="UP"):
                 if parent and parent.userRating and parent.userRating > 0:
                     parent_key = str(parent.ratingKey)
                     parent_rating = parent.userRating
+                    parent_ts = parent.lastRatedAt.isoformat() if parent.lastRatedAt else ""
 
-                    # If parent's rating is inferred (in state), inherit directly.
-                    # Otherwise, it's a manual rating, so apply gravity.
-                    if not is_rating_manual(parent_key, parent_rating):
-                        # Use full precision rating from state if available
+                    if not is_rating_manual(parent_key, parent_rating, parent_ts):
                         parent_state_entry = state.get(parent_key)
                         if parent_state_entry:
                              inferred_rating = parent_state_entry.get('r') if isinstance(parent_state_entry, dict) else parent_state_entry
@@ -1234,54 +1210,39 @@ def process_layer(label, items, global_mean, start_char="", direction="UP"):
                     else:
                         inferred_rating = (parent_rating * (1 - gravity)) + (global_mean * gravity)
 
-            # We DO NOT round the inferred rating here anymore to keep full precision
-            # inferred_rating = round(float(inferred_rating), 1)
-
             # --- CASE D/E: DRIFT VS UPDATE ---
             if inferred_rating:
-                # We expect the plex rating to be the rounded version of our inferred rating
                 target_plex_rating = round(float(inferred_rating))
                 delta = abs(plex_rating - target_plex_rating)
-                
-                # Case D: Drift (Close enough, skip the expensive network/DB write)
-                # We expect our internal state to vary from Plex, so we need to check if the
-                # *rounded* target plex rating is the same as the current plex rating.
-                # If delta is 0, then the plex rating is exactly what we would set it to.
-                # We also want to skip if the internal state already matches our new inferred rating.
                 
                 internal_delta = 0
                 if state_rating is not None:
                      stored_rating = state_rating.get('r') if isinstance(state_rating, dict) else state_rating
-                     internal_delta = abs(float(stored_rating) - float(inferred_rating))
+                     if stored_rating is not None:
+                        internal_delta = abs(float(stored_rating) - float(inferred_rating))
 
                 if state_rating is not None and delta == 0 and internal_delta < 0.05:
                     skipped_count += 1
                     continue
                 
-                # Case B/E: New or Significant Change
-                # If the current plex rating does not match our intended rounded value,
-                # or if our internal high-precision calculation has drifted significantly (e.g. > 0.05),
-                # we need to update.
                 if state_rating is None or delta != 0 or internal_delta >= 0.05:
                     if not config.get('DRY_RUN', True):
-                        verified_rating = item_rate(item, inferred_rating)
-                        state[key] = {'r': verified_rating, 't': 0, 'm': False} # Mark as inferred, not a twin
+                        verified_rating, ts = item_rate(item, inferred_rating)
+                        state[key] = {'r': verified_rating, 't': 0, 'm': False, 'lr': ts}
                         if tag_name and tag_name not in [m.tag for m in item.moods]:
                             item.addMood(tag_name)
                     updated_count += 1
-                    batch_counter += 1 # Increment the "Burst" counter
+                    batch_counter += 1
             
             # Periodic Save
             if updated_count % 100 == 0 and updated_count > 0:
                 save_state()
 
-            # If we've hit a batch limit, pause to let Plex finish its disk I/O
             if batch_counter >= cooldown_batch:
                 save_state()
-                #tqdm.write(f"--- DB Breather: Pausing for {cooldown_sleep}s ---")
                 pbar.set_description(f"{label}: --pause {cooldown_sleep}s--   ")
                 time.sleep(cooldown_sleep)
-                batch_counter = 0 # Reset the burst counter
+                batch_counter = 0
                 
         except KeyboardInterrupt:
             if handle_pause(pbar) == 'q':
