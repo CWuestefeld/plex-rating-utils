@@ -16,7 +16,7 @@ import reports
 from logger import log_event
 
 # --- Config & State loading ---
-APP_VERSION = "1.5.1"
+APP_VERSION = "2.0.1"
 CONFIG_FILE = 'config.json'
 STATE_FILE = 'plex_state.json'
 
@@ -232,43 +232,57 @@ def is_excluded_from_averages(track, exclusion_rules):
 
     return False
 
-def is_hijack(stored_timestamp, current_timestamp):
+
+def is_hijack(stored_timestamp, current_timestamp, stored_rating=None, current_rating=None):
     """
     Checks if a rating change should be considered a manual hijack by the user
-    by comparing the last rated timestamps.
+    by comparing timestamps, guarded against Plex Cloud Sync phantom updates.
     """
     # 1. If Plex has no rating event, it's impossible to be a hijack.
     if not current_timestamp:
         return False
 
-    # 2. MIGRATION SAFETY: If we have a state record but no timestamp,
-    # we don't have enough data to prove a hijack. Return False
-    # so the script can "Claim" the item with a fresh timestamp.
+    # 2. MIGRATION SAFETY
     if not stored_timestamp:
         return False
 
-    # 3. MONITORING: Standard temporal check.
-    return current_timestamp > stored_timestamp
+    # 3. MONITORING: Temporal check
+    if current_timestamp > stored_timestamp:
+        # 4. PHANTOM SYNC GUARD: Did Plex just touch the record without changing the value?
+        if stored_rating is not None and current_rating is not None:
+            expected_plex_rating = round(float(stored_rating))
+            if abs(current_rating - expected_plex_rating) < 0.01:
+                # The value matches what we left there. This is a Plex background sync.
+                return False
+
+        # Timestamp is newer AND value changed. It's a genuine hijack.
+        return True
+
+    return False
+
 
 def is_rating_manual(key_str, current_plex_rating, current_timestamp):
     """
     Determines if an item's rating should be considered manually set by the user.
     """
     state_entry = state.get(key_str)
-    
+
     # Not tracked in state -> it's manual
     if not state_entry:
         return True
-        
+
     # Check 'm' flag
     if isinstance(state_entry, dict) and state_entry.get('m', False):
         return True
-        
-    # Manual Hijack Detection (User changed an inferred rating)
+
+    # Manual Hijack Detection
     stored_timestamp = state_entry.get('lr', "") if isinstance(state_entry, dict) else ""
-    if is_hijack(stored_timestamp, current_timestamp):
+    stored_rating = state_entry.get('r') if isinstance(state_entry, dict) else state_entry
+
+    # Pass the values for the Phantom Sync Guard
+    if is_hijack(stored_timestamp, current_timestamp, stored_rating, current_plex_rating):
         return True
-        
+
     return False
 
 def get_library_prior(music, silent=False):
@@ -1031,13 +1045,15 @@ def process_layer(label, items, global_mean, start_char="", direction="UP"):
             # --- CASE C: MANUAL HIJACK DETECTION ---
             if state_rating is not None:
                 stored_ts = state_rating.get('lr', "")
-                if is_hijack(stored_ts, curr_ts):
+                stored_r = state_rating.get('r') if isinstance(state_rating, dict) else state_rating
+
+                if is_hijack(stored_ts, curr_ts, stored_r, plex_rating):
                     if label == 'Track':
-                        log_event(f"CALC:{label}-{direction}:HIJACK", f"Track: {item.title} on Album: {item.parentTitle} by Artist: {item.grandparentTitle}; Stored TS: {stored_ts} Plex TS: {curr_ts}", "info")
+                        log_event(f"CALC:{label}-{direction}:HIJACK", f"Track: {item.title} on Album: {item.parentTitle} by Artist: {item.grandparentTitle} ~ Stored: {stored_r} @ {stored_ts} Plex: {plex_rating} @ {curr_ts}", "info")
                     elif label == 'Album':
-                        log_event(f"CALC:{label}-{direction}:HIJACK", f"Album: {item.title} by Artist: {item.parentTitle}; Stored TS: {stored_ts} Plex TS: {curr_ts}", "info")
+                        log_event(f"CALC:{label}-{direction}:HIJACK", f"Album: {item.title} by Artist: {item.parentTitle} ~ Stored: {stored_r} @ {stored_ts} Plex: {plex_rating} @ {curr_ts}", "info")
                     else:
-                        log_event(f"CALC:{label}-{direction}:HIJACK", f"Item: {item.title}; Stored TS: {stored_ts} Plex TS: {curr_ts}", "info")
+                        log_event(f"CALC:{label}-{direction}:HIJACK", f"Item: {item.title} ~ Stored: {stored_r} @ {stored_ts} Plex: {plex_rating} @ {curr_ts}", "info")
                     if not config.get('DRY_RUN', True):
                         if key in state:
                             del state[key]
