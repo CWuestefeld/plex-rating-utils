@@ -2,6 +2,8 @@
 
 A Python-based utility for Plex Media Server that uses Bayesian math hierarchically to intelligently propagate ratings across your music library.
 
+**WARNING**: I've discovered anomalies with the data pulled from Plex's API, particularly with the `userRating` and `lastRatedAt` fields. This can lead to unexpected behavior and incorrect ratings. Use with caution and consider manually rating tracks that seem off.
+
 ## The Motivation
 
 Plex is great, and PlexAmp makes it even better. Especially with large music libraries, the Guest DJ and smart playlists make it easy to (re)discover your music. But these features are hobbled by the rating system. You have to individually rate each track for the app to be able to do anything with it.
